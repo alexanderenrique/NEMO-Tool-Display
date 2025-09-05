@@ -16,11 +16,14 @@
 #define MQTT_CLIENT_ID "nemo_display_%d"
 #define MQTT_TOPIC_PREFIX "nemo/tools"
 
-// Display Configuration
+// Display Configuration (TFT 480x320)
 #define DISPLAY_WIDTH 480
 #define DISPLAY_HEIGHT 320
 #define DISPLAY_SDA 21
 #define DISPLAY_SCL 22
+#define DISPLAY_CS 5
+#define DISPLAY_DC 17
+#define DISPLAY_RST 16
 
 // Timing Configuration
 #define MQTT_RECONNECT_INTERVAL 5000
