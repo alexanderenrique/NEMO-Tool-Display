@@ -19,6 +19,10 @@ const char* mqtt_server = MQTT_BROKER;
 const int mqtt_port = MQTT_PORT;
 const char* mqtt_client_id = MQTT_CLIENT_ID;
 const char* mqtt_topic_prefix = MQTT_TOPIC_PREFIX;
+const bool mqtt_use_ssl = MQTT_USE_SSL;
+
+// Tool configuration - Set this to the specific tool this display should show
+const char* target_tool_name = TARGET_TOOL_NAME;
 
 // Display configuration (TFT 480x320)
 TFT_eSPI tft = TFT_eSPI();
@@ -200,9 +204,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     int secondLastSlash = topicStr.lastIndexOf('/', lastSlash - 1);
     String toolId = topicStr.substring(secondLastSlash + 1, lastSlash);
     
+    // Get tool name from message
+    String toolName = doc["name"].as<String>();
+    
+    // Check if this is the tool we should display
+    if (strlen(target_tool_name) > 0 && toolName.toLowerCase() != String(target_tool_name).toLowerCase()) {
+      Serial.println("Ignoring message for tool: " + toolName + " (expecting: " + String(target_tool_name) + ")");
+      return;
+    }
+    
     // Update basic tool status
     currentTool.id = toolId;
-    currentTool.name = doc["name"].as<String>();
+    currentTool.name = toolName;
     currentTool.status = doc["status"].as<String>();
     currentTool.category = doc["category"].as<String>();
     currentTool.operational = doc["operational"].as<bool>();

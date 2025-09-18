@@ -1,0 +1,36 @@
+{
+  "registries": {
+    "ai-rules": {
+      "branches": [
+        "main",
+        "master"
+      ],
+      "type": "git",
+      "url": "https://github.com/PatrickJS/awesome-cursorrules.git"
+    }
+  },
+  "rulesets": {
+    "ai-rules": {
+      "my-rules": {
+        "version": "latest",
+        "include": [
+          "rules-new/python.mdc",
+          "rules-new/cpp.mdc"
+        ],
+        "exclude": []
+      }
+    }
+  },
+  "sinks": {
+    "cursor": {
+      "directories": [
+        ".cursor/rules"
+      ],
+      "include": [
+        "**/*"
+      ],
+      "exclude": [],
+      "layout": "hierarchical"
+    }
+  }
+}

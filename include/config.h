@@ -14,7 +14,11 @@
 #define MQTT_BROKER "192.168.1.100"
 #define MQTT_PORT 1883
 #define MQTT_CLIENT_ID "nemo_display_%d"
-#define MQTT_TOPIC_PREFIX "nemo/tools"
+#define MQTT_TOPIC_PREFIX "nemo/esp32"
+#define MQTT_USE_SSL false
+
+// Tool Configuration - Set this to the specific tool name this display should show
+// This is defined via build flags in platformio.ini, not here
 
 // Display Configuration (TFT 480x320)
 #define DISPLAY_WIDTH 480

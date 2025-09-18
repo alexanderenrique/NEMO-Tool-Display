@@ -1,0 +1,11 @@
+{
+  "rulesets": {
+    "ai-rules": {
+      "my-rules": {
+        "version": "c78546c52ba4fe555e9ee5c21a2c894d9d89513f",
+        "display": "c78546c",
+        "checksum": "sha256:2ededa8bc5d033c9a9f360ded535f69c0fc74ad8060bf105b6309674582b55db"
+      }
+    }
+  }
+}

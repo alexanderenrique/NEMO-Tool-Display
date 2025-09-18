@@ -36,9 +36,10 @@ class NEMOToolServer:
     
     def __init__(self):
         self.mqtt_broker = os.getenv('MQTT_BROKER', '192.168.1.100')
-        self.mqtt_port = int(os.getenv('MQTT_PORT', '1883'))
+        self.mqtt_port = int(os.getenv('MQTT_PORT', '8883'))
         self.mqtt_username = os.getenv('MQTT_USERNAME', '')
         self.mqtt_password = os.getenv('MQTT_PASSWORD', '')
+        self.mqtt_use_ssl = os.getenv('MQTT_USE_SSL', 'true').lower() == 'true'
         
         # ESP32 Display Configuration
         esp32_tools_str = os.getenv('ESP32_DISPLAY_TOOLS', '')
@@ -54,6 +55,14 @@ class NEMOToolServer:
         if self.mqtt_username and self.mqtt_password:
             self.mqtt_client.username_pw_set(self.mqtt_username, self.mqtt_password)
         
+        # Configure SSL if enabled
+        if self.mqtt_use_ssl:
+            import ssl
+            self.mqtt_client.tls_set(ca_certs=None, certfile=None, keyfile=None, 
+                                   cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLS, 
+                                   ciphers=None)
+            self.mqtt_client.tls_insecure_set(False)  # Set to True only for testing with self-signed certs
+        
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
         self.mqtt_client.on_message = self.on_mqtt_message
@@ -64,7 +73,8 @@ class NEMOToolServer:
         self.mqtt_client.will_set("nemo/server/status", "offline", qos=1, retain=True)
         
         try:
-            logger.info(f"Connecting to MQTT broker at {self.mqtt_broker}:{self.mqtt_port}")
+            protocol = "mqtts" if self.mqtt_use_ssl else "mqtt"
+            logger.info(f"Connecting to MQTT broker at {protocol}://{self.mqtt_broker}:{self.mqtt_port}")
             self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, 60)
             self.mqtt_client.loop_start()
             
@@ -78,7 +88,7 @@ class NEMOToolServer:
                 
                 # Publish server online status
                 self.mqtt_client.publish("nemo/server/status", "online", qos=1, retain=True)
-                logger.info(f"Successfully connected to MQTT broker and subscribed to tool status updates")
+                logger.info(f"Successfully connected to MQTT broker with SSL and subscribed to tool status updates")
             else:
                 raise Exception("MQTT connection not established")
                 
