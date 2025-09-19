@@ -20,8 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Configuration
-ENV_FILE="config.env"
-PYTHON_VENV="venv/bin/activate"
+ENV_FILE=".env"
 BROKER_SCRIPT="start_mqtt_broker.sh"
 SERVER_SCRIPT="main.py"
 
@@ -62,20 +61,17 @@ if [ ! -f "$SERVER_SCRIPT" ]; then
     exit 1
 fi
 
-# Check if virtual environment exists
-if [ ! -f "$PYTHON_VENV" ]; then
-    echo -e "${RED}Error: Python virtual environment not found at $PYTHON_VENV${NC}"
-    echo "Please create a virtual environment first:"
-    echo "  python3 -m venv venv"
-    echo "  source venv/bin/activate"
-    echo "  pip install -r requirements.txt"
-    exit 1
-fi
+# Check if Python dependencies are available
+echo -e "${YELLOW}Checking Python dependencies...${NC}"
+python3 -c "import paho.mqtt.client, dotenv, aiohttp" 2>/dev/null || {
+    echo -e "${YELLOW}Installing required Python packages...${NC}"
+    pip3 install -r requirements.txt
+}
 
 # Check if environment file exists
 if [ ! -f "$ENV_FILE" ]; then
     echo -e "${YELLOW}Warning: $ENV_FILE not found. Using default configuration.${NC}"
-    echo "You can copy config.env.example to config.env and customize it."
+    echo "You can copy config.env.example to .env and customize it."
 fi
 
 # Check if mosquitto is installed
@@ -126,15 +122,8 @@ else
     echo -e "${YELLOW}Warning: mosquitto_pub not available, skipping connection test${NC}"
 fi
 
-# Activate virtual environment and start Python server
+# Start Python server
 echo -e "${YELLOW}Starting NEMO server...${NC}"
-source "$PYTHON_VENV"
-
-# Check if required packages are installed
-python3 -c "import paho.mqtt.client, dotenv" 2>/dev/null || {
-    echo -e "${YELLOW}Installing required Python packages...${NC}"
-    pip install -r requirements.txt
-}
 
 # Start the server in the background
 python3 "$SERVER_SCRIPT" &
@@ -148,7 +137,7 @@ if kill -0 $SERVER_PID 2>/dev/null; then
     echo -e "${GREEN}NEMO system started successfully!${NC}"
     echo ""
     echo "System Status:"
-    echo "  - MQTT Broker: Running on ports 1883 (non-SSL) and 8883 (SSL)"
+    echo "  - MQTT Broker: Running on port 1883 (non-SSL)"
     echo "  - NEMO Server: Running (PID: $SERVER_PID)"
     echo "  - Configuration: $ENV_FILE"
     echo ""
@@ -161,7 +150,7 @@ if kill -0 $SERVER_PID 2>/dev/null; then
     echo ""
     echo "Logs:"
     echo "  - MQTT Broker: mqtt/log/mosquitto.log"
-    echo "  - NEMO Server: nemo_server.log"
+    echo "  - NEMO Server: Check console output"
     echo ""
     echo "To stop the system: Press Ctrl+C or run 'pkill -f start_nemo_system.sh'"
     echo ""

@@ -58,10 +58,11 @@ class NEMOToolServer:
         # Configure SSL if enabled
         if self.mqtt_use_ssl:
             import ssl
+            # For self-signed certificates, we need to disable certificate verification
             self.mqtt_client.tls_set(ca_certs=None, certfile=None, keyfile=None, 
-                                   cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLS, 
+                                   cert_reqs=ssl.CERT_NONE, tls_version=ssl.PROTOCOL_TLS, 
                                    ciphers=None)
-            self.mqtt_client.tls_insecure_set(False)  # Set to True only for testing with self-signed certs
+            self.mqtt_client.tls_insecure_set(True)  # Allow self-signed certificates
         
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
