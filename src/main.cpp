@@ -1,120 +1,117 @@
 /*
- * NEMO Tool Display - ESP32 Display Node
- * Receives tool status via MQTT and displays on OLED screen
+ * NEMO Tool Display - Simple Test
+ * Basic WiFi connection and LVGL display test
  */
 
 #include <WiFi.h>
+#include <TFT_eSPI.h>
+#include <SPI.h>
+#include <lvgl.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <TFT_eSPI.h>
-#include <Wire.h>
-#include <SPI.h>
 
 // WiFi credentials
-const char* ssid = WIFI_SSID;
-const char* password = WIFI_PASSWORD;
+const char* ssid = "ALVA";
+const char* password = "AAAAABBBBB";
 
-// MQTT configuration
-const char* mqtt_server = MQTT_BROKER;
-const int mqtt_port = MQTT_PORT;
-const char* mqtt_client_id = MQTT_CLIENT_ID;
-const char* mqtt_topic_prefix = MQTT_TOPIC_PREFIX;
-const bool mqtt_use_ssl = MQTT_USE_SSL;
-
-// Tool configuration - Set this to the specific tool this display should show
-const char* target_tool_name = TARGET_TOOL_NAME;
+// MQTT Configuration - Using non-SSL for local testing
+const char* mqtt_broker = "192.168.2.181";
+const int mqtt_port = 1883;  // Non-SSL port for local development
+const char* mqtt_client_id = "nemo_display_001";
+const char* mqtt_topic_status = "nemo/esp32/woollam/status";
+const char* mqtt_topic_overall = "nemo/esp32/overall";
 
 // Display configuration (TFT 480x320)
 TFT_eSPI tft = TFT_eSPI();
 
 // MQTT client
-WiFiClient espClient;
-PubSubClient client(espClient);
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
 
-// Tool data structure
-struct ToolStatus {
-  String id;
-  String name;
-  String status;
-  String category;
-  bool operational;
-  bool problematic;
-  String timestamp;
-  
-  // User information (only when tool is in use)
-  String userName;
-  String userUsername;
-  String userId;
-  
-  // Usage information (only when tool is in use)
-  String usageStartTime;
-  String usageStartTimeFormatted;
-  String usageId;
-  
-  bool valid;
-};
+// LVGL display buffer
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t buf[480 * 10]; // 10 lines buffer
 
-// Global variables
-ToolStatus currentTool;
-bool displayUpdateNeeded = false;
-unsigned long lastReconnectAttempt = 0;
-const unsigned long reconnectInterval = 5000; // 5 seconds
+// LVGL display driver
+static lv_disp_drv_t disp_drv;
+
+// LVGL UI elements
+lv_obj_t *title_label = nullptr;
+lv_obj_t *status_label = nullptr;
+lv_obj_t *wifi_label = nullptr;
+lv_obj_t *user_label = nullptr;
+lv_obj_t *time_label = nullptr;
+lv_obj_t *tool_status_label = nullptr;
+
+// Function declarations
+void setupWiFi();
+void setupMQTT();
+void connectMQTT();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void processMQTTMessage(const char* topic, const char* payload);
+void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
+void create_simple_ui();
 
 void setup() {
-  Serial.begin(115200);
-  Serial.println("NEMO Tool Display Starting...");
+  Serial.begin(9600);
+  Serial.println("NEMO Tool Display - Simple Test Starting...");
   
   // Initialize TFT display
   tft.init();
-  tft.setRotation(1); // Landscape orientation
+  tft.setRotation(1); // Use working rotation from lvgl_test
   tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.drawString("NEMO Tool Display", 10, 50);
-  tft.setTextSize(1);
-  tft.drawString("Initializing...", 10, 100);
   
-  // Initialize tool status
-  currentTool.valid = false;
+  // Initialize LVGL
+  lv_init();
+  
+  // Initialize display buffer
+  lv_disp_draw_buf_init(&draw_buf, buf, NULL, 480 * 10);
+  
+  // Initialize display driver
+  lv_disp_drv_init(&disp_drv);
+  disp_drv.hor_res = 480;
+  disp_drv.ver_res = 320;
+  disp_drv.flush_cb = my_disp_flush;
+  disp_drv.draw_buf = &draw_buf;
+  lv_disp_drv_register(&disp_drv);
+  
+  // Create simple UI
+  create_simple_ui();
   
   // Connect to WiFi
   setupWiFi();
   
   // Setup MQTT
-  client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(mqttCallback);
-  client.setKeepAlive(60);
-  client.setSocketTimeout(15);
+  setupMQTT();
   
   Serial.println("Setup complete");
 }
 
 void loop() {
-  // Handle MQTT connection
-  if (!client.connected()) {
-    unsigned long now = millis();
-    if (now - lastReconnectAttempt > reconnectInterval) {
-      lastReconnectAttempt = now;
-      if (reconnectMQTT()) {
-        lastReconnectAttempt = 0;
-      }
-    }
-  } else {
-    client.loop();
-  }
+  // Update LVGL timer (5ms)
+  lv_tick_inc(5);
   
-  // Update display if needed
-  if (displayUpdateNeeded) {
-    updateDisplay();
-    displayUpdateNeeded = false;
-  }
+  // Handle LVGL tasks
+  lv_timer_handler();
   
-  delay(100);
+  // Handle MQTT
+  if (!mqttClient.connected()) {
+    connectMQTT();
+  }
+  mqttClient.loop();
+  
+  delay(5); // Reduced delay for LVGL responsiveness
 }
 
 void setupWiFi() {
-  tft.setTextSize(1);
-  tft.drawString("Connecting to WiFi...", 10, 120);
+  Serial.println("Starting WiFi connection...");
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+  
+  if (status_label) {
+    lv_label_set_text(status_label, "Connecting to WiFi...");
+    lv_obj_set_style_text_color(status_label, lv_color_hex(0xFFFF00), 0);
+  }
   
   WiFi.begin(ssid, password);
   
@@ -122,73 +119,191 @@ void setupWiFi() {
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
     Serial.print(".");
-    tft.drawString(".", 10 + (attempts * 8), 140);
     attempts++;
+    
+    // Update status every 5 attempts
+    if (attempts % 5 == 0) {
+      Serial.print(" (attempt ");
+      Serial.print(attempts);
+      Serial.println(")");
+    }
   }
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.println("IP address: ");
+    Serial.println("WiFi connected successfully!");
+    Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+    Serial.print("Signal strength: ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
     
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawString("WiFi Connected!", 10, 160);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("IP: " + WiFi.localIP().toString(), 10, 180);
+    if (status_label) {
+      lv_label_set_text(status_label, "WiFi Connected!");
+      lv_obj_set_style_text_color(status_label, lv_color_hex(0x00FF00), 0);
+    }
+    if (wifi_label) {
+      String ipStr = "IP: " + WiFi.localIP().toString();
+      lv_label_set_text(wifi_label, ipStr.c_str());
+      lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x00FF00), 0);
+    }
   } else {
-    Serial.println("WiFi connection failed");
-    displayError("WiFi Failed");
+    Serial.println("");
+    Serial.println("WiFi connection failed!");
+    Serial.print("Status: ");
+    Serial.println(WiFi.status());
+    
+    if (status_label) {
+      lv_label_set_text(status_label, "WiFi Failed");
+      lv_obj_set_style_text_color(status_label, lv_color_hex(0xFF0000), 0);
+    }
+    if (wifi_label) {
+      lv_label_set_text(wifi_label, "Connection Failed");
+      lv_obj_set_style_text_color(wifi_label, lv_color_hex(0xFF0000), 0);
+    }
   }
 }
 
-bool reconnectMQTT() {
-  tft.setTextSize(1);
-  tft.drawString("Connecting to MQTT...", 10, 200);
+
+// LVGL display flush function
+void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
   
-  if (client.connect(mqtt_client_id)) {
-    Serial.println("MQTT connected");
+  tft.startWrite();
+  tft.setAddrWindow(area->x1, area->y1, w, h);
+  tft.pushColors((uint16_t*)&color_p->full, w * h, true);
+  tft.endWrite();
+  
+  lv_disp_flush_ready(disp);
+}
+
+// Create simple LVGL UI
+void create_simple_ui() {
+  // Create main container - use full screen
+  lv_obj_t *cont = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(cont, 480, 320);  // Full screen size
+  lv_obj_set_pos(cont, 0, 0);       // Position at top-left corner
+  lv_obj_set_style_bg_color(cont, lv_color_hex(0x1A1A1A), 0);
+  lv_obj_set_style_border_width(cont, 0, 0);  // No border
+  lv_obj_set_style_radius(cont, 0, 0);        // No rounded corners
+  
+  // Title label
+  title_label = lv_label_create(cont);
+  lv_label_set_text(title_label, "NEMO Tool Display");
+  lv_obj_set_style_text_font(title_label, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(title_label, lv_color_hex(0x00AAFF), 0);
+  lv_obj_align(title_label, LV_ALIGN_TOP_MID, 0, 10);
+  
+  // Status label
+  status_label = lv_label_create(cont);
+  lv_label_set_text(status_label, "Initializing...");
+  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_text_color(status_label, lv_color_hex(0xFFFF00), 0);
+  lv_obj_align(status_label, LV_ALIGN_CENTER, 0, -20);
+  
+  // WiFi info label
+  wifi_label = lv_label_create(cont);
+  lv_label_set_text(wifi_label, "Waiting for WiFi...");
+  lv_obj_set_style_text_font(wifi_label, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(wifi_label, lv_color_hex(0xCCCCCC), 0);
+  lv_obj_align(wifi_label, LV_ALIGN_CENTER, 0, 20);
+  
+  // User name label
+  user_label = lv_label_create(cont);
+  lv_label_set_text(user_label, "User: --");
+  lv_obj_set_style_text_font(user_label, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_text_color(user_label, lv_color_hex(0x00FF00), 0);
+  lv_obj_align(user_label, LV_ALIGN_CENTER, 0, 50);
+  
+  // Time label
+  time_label = lv_label_create(cont);
+  lv_label_set_text(time_label, "Time: --:--");
+  lv_obj_set_style_text_font(time_label, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(time_label, lv_color_hex(0x00AAFF), 0);
+  lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 80);
+  
+  // Tool status label
+  tool_status_label = lv_label_create(cont);
+  lv_label_set_text(tool_status_label, "Status: Offline");
+  lv_obj_set_style_text_font(tool_status_label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF0000), 0);
+  lv_obj_align(tool_status_label, LV_ALIGN_CENTER, 0, 110);
+  
+  Serial.println("Simple LVGL UI created successfully!");
+}
+
+// MQTT Setup
+void setupMQTT() {
+  mqttClient.setServer(mqtt_broker, mqtt_port);
+  mqttClient.setCallback(mqttCallback);
+  Serial.println("MQTT client configured");
+}
+
+// MQTT Connection
+void connectMQTT() {
+  // Only attempt connection if WiFi is connected
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, skipping MQTT connection");
+    return;
+  }
+  
+  if (!mqttClient.connected()) {
+    Serial.print("Attempting MQTT connection...");
     
-    // Subscribe to tool status topics
-    String toolTopic = String(mqtt_topic_prefix) + "/+/status";
-    client.subscribe(toolTopic.c_str());
-    
-    String overallTopic = String(mqtt_topic_prefix) + "/overall";
-    client.subscribe(overallTopic.c_str());
-    
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawString("MQTT Connected!", 10, 220);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    
-    return true;
-  } else {
-    Serial.print("MQTT connection failed, rc=");
-    Serial.print(client.state());
-    Serial.println(" retrying in 5 seconds");
-    
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.drawString("MQTT Failed: " + String(client.state()), 10, 220);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    
-    return false;
+    if (mqttClient.connect(mqtt_client_id)) {
+      Serial.println(" connected");
+      
+      // Subscribe to topics
+      mqttClient.subscribe(mqtt_topic_status);
+      mqttClient.subscribe(mqtt_topic_overall);
+      
+      Serial.print("Subscribed to: ");
+      Serial.println(mqtt_topic_status);
+      Serial.print("Subscribed to: ");
+      Serial.println(mqtt_topic_overall);
+      
+      // Update status
+      if (status_label) {
+        lv_label_set_text(status_label, "MQTT Connected!");
+        lv_obj_set_style_text_color(status_label, lv_color_hex(0x00FF00), 0);
+      }
+    } else {
+      Serial.print(" failed, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" retrying in 5 seconds");
+      
+      // Update status
+      if (status_label) {
+        lv_label_set_text(status_label, "MQTT Failed");
+        lv_obj_set_style_text_color(status_label, lv_color_hex(0xFF0000), 0);
+      }
+      
+      delay(5000);
+    }
   }
 }
 
+// MQTT Callback
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // Convert payload to string
+  char message[length + 1];
+  memcpy(message, payload, length);
+  message[length] = '\0';
+  
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
-  
-  // Convert payload to string
-  String message = "";
-  for (int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
   Serial.println(message);
   
+  processMQTTMessage(topic, message);
+}
+
+// Process MQTT Message
+void processMQTTMessage(const char* topic, const char* payload) {
   // Parse JSON
-  DynamicJsonDocument doc(2048); // Increased size for enhanced messages
-  DeserializationError error = deserializeJson(doc, message);
+  StaticJsonDocument<512> doc;
+  DeserializationError error = deserializeJson(doc, payload);
   
   if (error) {
     Serial.print("JSON parsing failed: ");
@@ -196,167 +311,55 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
   
-  // Check if this is a tool status message
-  String topicStr = String(topic);
-  if (topicStr.indexOf("/status") > 0) {
-    // Extract tool ID from topic
-    int lastSlash = topicStr.lastIndexOf('/');
-    int secondLastSlash = topicStr.lastIndexOf('/', lastSlash - 1);
-    String toolId = topicStr.substring(secondLastSlash + 1, lastSlash);
-    
-    // Get tool name from message
-    String toolName = doc["name"].as<String>();
-    
-    // Check if this is the tool we should display
-    if (strlen(target_tool_name) > 0 && toolName.toLowerCase() != String(target_tool_name).toLowerCase()) {
-      Serial.println("Ignoring message for tool: " + toolName + " (expecting: " + String(target_tool_name) + ")");
-      return;
+  // Handle tool status messages
+  if (strcmp(topic, mqtt_topic_status) == 0) {
+    // Extract user information
+    if (doc.containsKey("user") && doc["user"].containsKey("first_name")) {
+      const char* firstName = doc["user"]["first_name"];
+      if (user_label) {
+        String userText = "User: ";
+        userText += firstName;
+        lv_label_set_text(user_label, userText.c_str());
+        lv_obj_set_style_text_color(user_label, lv_color_hex(0x00FF00), 0);
+      }
     }
     
-    // Update basic tool status
-    currentTool.id = toolId;
-    currentTool.name = toolName;
-    currentTool.status = doc["status"].as<String>();
-    currentTool.category = doc["category"].as<String>();
-    currentTool.operational = doc["operational"].as<bool>();
-    currentTool.problematic = doc["problematic"].as<bool>();
-    currentTool.timestamp = doc["timestamp"].as<String>();
-    
-    // Parse user information if tool is in use
-    if (doc["user"] != nullptr && !doc["user"].isNull()) {
-      currentTool.userName = doc["user"]["name"].as<String>();
-      currentTool.userUsername = doc["user"]["username"].as<String>();
-      currentTool.userId = doc["user"]["id"].as<String>();
-    } else {
-      currentTool.userName = "";
-      currentTool.userUsername = "";
-      currentTool.userId = "";
+    // Extract enable time
+    if (doc.containsKey("enable_time")) {
+      const char* enableTime = doc["enable_time"];
+      if (time_label) {
+        String timeText = "Time: ";
+        timeText += enableTime;
+        lv_label_set_text(time_label, timeText.c_str());
+        lv_obj_set_style_text_color(time_label, lv_color_hex(0x00AAFF), 0);
+      }
     }
     
-    // Parse usage information if tool is in use
-    if (doc["usage"] != nullptr && !doc["usage"].isNull()) {
-      currentTool.usageStartTime = doc["usage"]["start_time"].as<String>();
-      currentTool.usageStartTimeFormatted = doc["usage"]["start_time_formatted"].as<String>();
-      currentTool.usageId = doc["usage"]["usage_id"].as<String>();
-    } else {
-      currentTool.usageStartTime = "";
-      currentTool.usageStartTimeFormatted = "";
-      currentTool.usageId = "";
-    }
-    
-    currentTool.valid = true;
-    displayUpdateNeeded = true;
-    
-    Serial.println("Tool status updated:");
-    Serial.println("  ID: " + currentTool.id);
-    Serial.println("  Name: " + currentTool.name);
-    Serial.println("  Status: " + currentTool.status);
-    Serial.println("  User: " + currentTool.userName);
-    if (currentTool.usageStartTimeFormatted.length() > 0) {
-      Serial.println("  Started: " + currentTool.usageStartTimeFormatted);
+    // Extract tool status
+    if (doc.containsKey("status")) {
+      const char* status = doc["status"];
+      if (tool_status_label) {
+        String statusText = "Status: ";
+        statusText += status;
+        lv_label_set_text(tool_status_label, statusText.c_str());
+        
+        // Color code based on status
+        if (strcmp(status, "active") == 0) {
+          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0x00FF00), 0);
+        } else if (strcmp(status, "idle") == 0) {
+          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFFFF00), 0);
+        } else if (strcmp(status, "maintenance") == 0) {
+          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF8800), 0);
+        } else {
+          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF0000), 0);
+        }
+      }
     }
   }
-}
-
-void updateDisplay() {
-  tft.fillScreen(TFT_BLACK);
   
-  if (!currentTool.valid) {
-    tft.setTextSize(3);
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("No Tool Data", 50, 100);
-    
-    tft.setTextSize(2);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("Waiting for MQTT...", 50, 150);
-  } else {
-    // Clear screen and draw header
-    tft.fillScreen(TFT_BLACK);
-    tft.drawRect(5, 5, 470, 310, TFT_WHITE);
-    
-    // Tool name (large, centered)
-    tft.setTextSize(4);
-    tft.setTextColor(TFT_CYAN, TFT_BLACK);
-    String displayName = currentTool.name;
-    if (displayName.length() > 20) {
-      displayName = displayName.substring(0, 17) + "...";
-    }
-    tft.drawString(displayName, 20, 30);
-    
-    // Status with color coding
-    tft.setTextSize(3);
-    String statusText = "Status: " + currentTool.status;
-    if (currentTool.status == "active") {
-      tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    } else if (currentTool.status == "idle") {
-      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    } else if (currentTool.status == "maintenance") {
-      tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-    } else {
-      tft.setTextColor(TFT_RED, TFT_BLACK);
-    }
-    tft.drawString(statusText, 20, 80);
-    
-    // User information (enhanced)
-    tft.setTextSize(2);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    if (currentTool.userName.length() > 0) {
-      // Show user name
-      String userText = "User: " + currentTool.userName;
-      if (userText.length() > 30) {
-        userText = userText.substring(0, 27) + "...";
-      }
-      tft.drawString(userText, 20, 120);
-      
-      // Show start time if tool is in use
-      if (currentTool.usageStartTimeFormatted.length() > 0) {
-        tft.setTextSize(1);
-        tft.setTextColor(TFT_GRAY, TFT_BLACK);
-        tft.drawString("Started: " + currentTool.usageStartTimeFormatted, 20, 150);
-        tft.setTextSize(2);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      }
-    } else {
-      tft.drawString("Available for use", 20, 120);
-    }
-    
-    // Tool ID and category
-    tft.setTextSize(1);
-    tft.setTextColor(TFT_GRAY, TFT_BLACK);
-    tft.drawString("ID: " + currentTool.id + " | " + currentTool.category, 20, 190);
-    
-    // Last updated time
-    String timeText = "Updated: " + currentTool.timestamp.substring(11, 19);
-    tft.drawString(timeText, 20, 210);
-    
-    // Draw status indicator box
-    int boxX = 350;
-    int boxY = 80;
-    int boxW = 100;
-    int boxH = 60;
-    
-    if (currentTool.status == "active") {
-      tft.fillRect(boxX, boxY, boxW, boxH, TFT_GREEN);
-    } else if (currentTool.status == "idle") {
-      tft.fillRect(boxX, boxY, boxW, boxH, TFT_YELLOW);
-    } else if (currentTool.status == "maintenance") {
-      tft.fillRect(boxX, boxY, boxW, boxH, TFT_ORANGE);
-    } else {
-      tft.fillRect(boxX, boxY, boxW, boxH, TFT_RED);
-    }
-    
-    tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.setTextSize(2);
-    tft.drawString(currentTool.status.toUpperCase(), boxX + 10, boxY + 20);
+  // Handle overall status messages
+  if (strcmp(topic, mqtt_topic_overall) == 0) {
+    Serial.println("Received overall status update");
+    // Could process overall system status here if needed
   }
-}
-
-void displayError(String error) {
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextSize(3);
-  tft.setTextColor(TFT_RED, TFT_BLACK);
-  tft.drawString("ERROR", 150, 100);
-  tft.setTextSize(2);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString(error, 50, 150);
 }

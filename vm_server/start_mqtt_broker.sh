@@ -23,11 +23,26 @@ LOG_DIR="./mqtt/log"
 
 # Create necessary directories
 echo -e "${YELLOW}Creating directories...${NC}"
-mkdir -p "$CERT_DIR" "$DATA_DIR" "$LOG_DIR"
+mkdir -p "$CERT_DIR" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
 
-# Check if certificates already exist
+# Copy config file if it doesn't exist
+if [ ! -f "$CONFIG_DIR/mosquitto.conf" ]; then
+    echo -e "${YELLOW}Copying MQTT configuration...${NC}"
+    if [ -f "../mqtt/config/mosquitto.conf" ]; then
+        cp "../mqtt/config/mosquitto.conf" "$CONFIG_DIR/"
+        echo -e "${GREEN}Configuration file copied successfully!${NC}"
+    else
+        echo -e "${RED}Error: Configuration file not found at ../mqtt/config/mosquitto.conf${NC}"
+        echo "Please ensure the configuration file exists in the parent directory."
+        exit 1
+    fi
+else
+    echo -e "${GREEN}Configuration file already exists.${NC}"
+fi
+
+# Check if certificates already exist (optional for non-SSL setup)
 if [ ! -f "$CERT_DIR/ca.crt" ] || [ ! -f "$CERT_DIR/server.crt" ] || [ ! -f "$CERT_DIR/server.key" ]; then
-    echo -e "${YELLOW}Generating SSL certificates...${NC}"
+    echo -e "${YELLOW}Generating SSL certificates (optional for non-SSL setup)...${NC}"
     
     # Generate CA private key
     openssl genrsa -out "$CERT_DIR/ca.key" 2048
@@ -91,20 +106,21 @@ if pgrep -f "mosquitto.*$CONFIG_DIR/mosquitto.conf" > /dev/null; then
     echo -e "${GREEN}MQTT broker started successfully!${NC}"
     echo ""
     echo "Broker Information:"
-    echo "  - Non-SSL Port: 1883"
-    echo "  - SSL Port: 8883"
-    echo "  - WebSocket Port: 9001"
+    echo "  - Primary Port (Non-SSL): 1883  <-- Use this for ESP32"
+    echo "  - SSL Port: 8883 (optional)"
+    echo "  - WebSocket Port: 9001 (optional)"
     echo "  - Configuration: $CONFIG_DIR/mosquitto.conf"
     echo "  - Logs: $LOG_DIR/mosquitto.log"
     echo ""
-    echo "SSL Certificate Information:"
+    echo "For ESP32 Testing (Non-SSL):"
+    echo "  - Broker IP: $(hostname -I | awk '{print $1}')"
+    echo "  - Port: 1883"
+    echo "  - Test: mosquitto_pub -h localhost -p 1883 -t 'test/topic' -m 'Hello World'"
+    echo ""
+    echo "SSL Certificate Information (optional):"
     echo "  - CA Certificate: $CERT_DIR/ca.crt"
     echo "  - Server Certificate: $CERT_DIR/server.crt"
     echo "  - Server Private Key: $CERT_DIR/server.key"
-    echo ""
-    echo "To test the broker:"
-    echo "  - Non-SSL: mosquitto_pub -h localhost -p 1883 -t 'test/topic' -m 'Hello World'"
-    echo "  - SSL: mosquitto_pub -h localhost -p 8883 -t 'test/topic' -m 'Hello World' --cafile $CERT_DIR/ca.crt"
     echo ""
     echo "To stop the broker: pkill -f 'mosquitto.*$CONFIG_DIR/mosquitto.conf'"
 else

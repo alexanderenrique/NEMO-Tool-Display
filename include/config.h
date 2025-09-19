@@ -6,28 +6,31 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// WiFi Configuration
-#define WIFI_SSID "your_wifi_ssid"
-#define WIFI_PASSWORD "your_wifi_password"
-
-// MQTT Configuration
+// MQTT Configuration - These are defined via build flags in platformio.ini
+// Fallback definitions if not provided via build flags
+#ifndef MQTT_BROKER
 #define MQTT_BROKER "192.168.1.100"
+#endif
+#ifndef MQTT_PORT
 #define MQTT_PORT 1883
+#endif
+#ifndef MQTT_CLIENT_ID
 #define MQTT_CLIENT_ID "nemo_display_%d"
+#endif
+#ifndef MQTT_TOPIC_PREFIX
 #define MQTT_TOPIC_PREFIX "nemo/esp32"
+#endif
+#ifndef MQTT_USE_SSL
 #define MQTT_USE_SSL false
+#endif
 
 // Tool Configuration - Set this to the specific tool name this display should show
-// This is defined via build flags in platformio.ini, not here
+#ifndef TARGET_TOOL_NAME
+#define TARGET_TOOL_NAME "woollam"  // Fallback if not defined in build flags
+#endif
 
-// Display Configuration (TFT 480x320)
-#define DISPLAY_WIDTH 480
-#define DISPLAY_HEIGHT 320
-#define DISPLAY_SDA 21
-#define DISPLAY_SCL 22
-#define DISPLAY_CS 5
-#define DISPLAY_DC 17
-#define DISPLAY_RST 16
+// Display Configuration - SPI Interface
+// Display pins and dimensions are handled by TFT_eSPI library in User_Setup.h
 
 // Timing Configuration
 #define MQTT_RECONNECT_INTERVAL 5000
@@ -41,3 +44,4 @@
 #define STATUS_OFFLINE "offline"
 
 #endif // CONFIG_H
+
