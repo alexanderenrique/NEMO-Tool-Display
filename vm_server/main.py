@@ -17,7 +17,7 @@ import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv('config.env')
 
 # Configure logging
 logging.basicConfig(
@@ -45,6 +45,9 @@ class NEMOToolServer:
         esp32_tools_str = os.getenv('ESP32_DISPLAY_TOOLS', '')
         self.esp32_display_tools = [name.strip().lower() for name in esp32_tools_str.split(',') if name.strip()]
         
+        # Track last users for each tool
+        self.last_users = {}  # tool_id -> user_name
+        
         self.mqtt_client = None
         self.running = False
         
@@ -58,11 +61,20 @@ class NEMOToolServer:
         # Configure SSL if enabled
         if self.mqtt_use_ssl:
             import ssl
-            # For self-signed certificates, we need to disable certificate verification
-            self.mqtt_client.tls_set(ca_certs=None, certfile=None, keyfile=None, 
-                                   cert_reqs=ssl.CERT_NONE, tls_version=ssl.PROTOCOL_TLS, 
-                                   ciphers=None)
-            self.mqtt_client.tls_insecure_set(True)  # Allow self-signed certificates
+            # Use the actual CA certificate for proper SSL connection
+            ca_cert_path = "mqtt/certs/ca.crt"
+            if os.path.exists(ca_cert_path):
+                self.mqtt_client.tls_set(ca_certs=ca_cert_path, certfile=None, keyfile=None, 
+                                       cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLS, 
+                                       ciphers=None)
+                logger.info(f"Using SSL with CA certificate: {ca_cert_path}")
+            else:
+                # Fallback to insecure mode if CA cert not found
+                self.mqtt_client.tls_set(ca_certs=None, certfile=None, keyfile=None, 
+                                       cert_reqs=ssl.CERT_NONE, tls_version=ssl.PROTOCOL_TLS, 
+                                       ciphers=None)
+                self.mqtt_client.tls_insecure_set(True)
+                logger.warning("CA certificate not found, using insecure SSL mode")
         
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
@@ -84,8 +96,8 @@ class NEMOToolServer:
             
             if self.mqtt_client.is_connected():
                 # Subscribe to tool status updates from NEMO backend
-                self.mqtt_client.subscribe("nemo/backend/tools/+/status", qos=1)
-                self.mqtt_client.subscribe("nemo/backend/tools/overall", qos=1)
+                self.mqtt_client.subscribe("nemo/tools/+/+", qos=1)  # Subscribe to all tool events
+                self.mqtt_client.subscribe("nemo/tools/overall", qos=1)
                 
                 # Publish server online status
                 self.mqtt_client.publish("nemo/server/status", "online", qos=1, retain=True)
@@ -105,8 +117,23 @@ class NEMOToolServer:
             logger.error(f"MQTT connection failed with code {rc}")
     
     def on_mqtt_disconnect(self, client, userdata, rc):
-        """MQTT disconnection callback"""
+        """MQTT disconnection callback with auto-reconnect"""
         logger.warning(f"MQTT disconnected with code {rc}")
+        
+        # Publish offline status
+        if self.mqtt_client:
+            try:
+                self.mqtt_client.publish("nemo/server/status", "offline", qos=1, retain=True)
+            except:
+                pass
+        
+        # Auto-reconnect if not intentionally disconnected
+        if rc != 0 and self.running:
+            logger.info("Attempting to reconnect to MQTT broker...")
+            try:
+                self.mqtt_client.reconnect()
+            except Exception as e:
+                logger.error(f"Reconnection failed: {e}")
     
     def on_mqtt_publish(self, client, userdata, mid):
         """MQTT publish callback"""
@@ -121,33 +148,88 @@ class NEMOToolServer:
             logger.debug(f"Received message on topic {topic}")
             
             # Handle individual tool status updates
-            if topic.startswith("nemo/backend/tools/") and topic.endswith("/status"):
-                tool_id = topic.split("/")[-2]  # Extract tool ID from topic
-                self.process_tool_status(tool_id, payload)
+            if topic.startswith("nemo/tools/") and len(topic.split("/")) >= 4:
+                parts = topic.split("/")
+                tool_id = parts[2]  # Extract tool ID from topic (e.g., "nemo/tools/1/disabled")
+                event_type = parts[3]  # Extract event type (e.g., "disabled", "enabled", etc.)
+                self.process_tool_status(tool_id, payload, event_type)
             
             # Handle overall status updates
-            elif topic == "nemo/backend/tools/overall":
+            elif topic == "nemo/tools/overall":
                 self.process_overall_status(payload)
                 
         except Exception as e:
             logger.error(f"Error processing MQTT message: {e}")
     
-    def process_tool_status(self, tool_id: str, tool_data: dict):
+    def process_tool_status(self, tool_id: str, tool_data: dict, event_type: str = None):
         """Process individual tool status update and forward to ESP32 displays"""
         try:
             # Check if this tool has an ESP32 display
-            tool_name = tool_data.get('name', '').lower()
+            tool_name = tool_data.get('tool', {}).get('name', '').lower()
+            if not tool_name and 'name' in tool_data:
+                tool_name = tool_data.get('name', '').lower()
+            
             if self.esp32_display_tools and tool_name not in self.esp32_display_tools:
                 logger.debug(f"Tool {tool_name} not configured for ESP32 display, skipping")
                 return
             
+            # Create a lightweight message for ESP32 displays - only essential data
+            tool_info = tool_data.get('tool', {})
+            user_info = tool_data.get('user', {})
+            interlock_info = tool_data.get('interlock', {})
+            
+            # Format timestamp to readable format (Month Day, Hour:Minute AM/PM)
+            formatted_time = "Unknown"
+            if tool_data.get('timestamp'):
+                try:
+                    from datetime import datetime
+                    # Parse the ISO timestamp
+                    dt = datetime.fromisoformat(tool_data['timestamp'].replace('Z', '+00:00'))
+                    # Format as "Jan 15, 2:30 PM"
+                    formatted_time = dt.strftime("%b %d, %I:%M %p")
+                except Exception as e:
+                    logger.warning(f"Failed to parse timestamp: {e}")
+                    formatted_time = "Invalid Time"
+            
+            # Handle user tracking and label switching
+            current_user = user_info.get('first_name', '')
+            user_label = "User"
+            user_display_name = current_user
+            
+            if event_type == "enabled" and current_user:
+                # Tool enabled - show current user and update last user
+                self.last_users[tool_id] = current_user
+                user_label = "User"
+                user_display_name = current_user
+            elif event_type == "disabled" and tool_id in self.last_users:
+                # Tool disabled - show last user
+                user_label = "Last User"
+                user_display_name = self.last_users[tool_id]
+            elif event_type == "disabled" and not tool_id in self.last_users:
+                # Tool disabled but no last user recorded - show current user as last
+                user_label = "Last User"
+                user_display_name = current_user
+                if current_user:
+                    self.last_users[tool_id] = current_user
+            
+            esp32_message = {
+                "event_type": event_type,
+                "timestamp": formatted_time,
+                "tool_name": tool_info.get('name', ''),
+                "in_use": tool_info.get('in_use', False),
+                "operational": tool_info.get('operational', False),
+                "user_label": user_label,
+                "user_name": user_display_name,
+                "interlock_enabled": interlock_info.get('enabled', False)
+            }
+            
             # Forward to ESP32 display topic
             esp32_topic = f"nemo/esp32/{tool_id}/status"
-            payload_json = json.dumps(tool_data)
+            payload_json = json.dumps(esp32_message)
             
             result = self.mqtt_client.publish(esp32_topic, payload_json, qos=1, retain=True)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.debug(f"Forwarded status for tool {tool_id} to ESP32 display")
+                logger.info(f"Forwarded {event_type} status for tool {tool_name} (ID: {tool_id}) to ESP32 display")
             else:
                 logger.warning(f"Failed to forward tool {tool_id} status: {result.rc}")
                 
