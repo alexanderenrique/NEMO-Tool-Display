@@ -392,14 +392,24 @@ void processMQTTMessage(const char* topic, const char* payload) {
     }
     
     
-    // Extract timestamp
+    // Extract timestamp and time label
     if (doc["timestamp"].is<const char*>()) {
       const char* timestamp = doc["timestamp"];
+      const char* timeLabel = doc["time_label"].as<const char*>();
+      
       if (time_label) {
-        String timeText = "Time: ";
+        String timeText = "";
+        if (timeLabel && strlen(timeLabel) > 0) {
+          timeText += timeLabel;
+          timeText += ": ";
+        } else {
+          timeText += "Time: ";
+        }
         timeText += timestamp;
         lv_label_set_text(time_label, timeText.c_str());
         lv_obj_set_style_text_color(time_label, lv_color_hex(0x000000), 0);
+        Serial.print("Updated time: ");
+        Serial.println(timeText.c_str());
       }
     }
     

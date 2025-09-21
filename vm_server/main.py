@@ -301,10 +301,18 @@ class NEMOToolServer:
                 if current_user:
                     self.last_users[tool_id] = current_user
             
+            # Determine time label based on event type
+            time_label = "Time"
+            if event_type == "enabled":
+                time_label = "Enabled Since"
+            elif event_type == "disabled":
+                time_label = "Disabled Since"
+            
             # Create minimal message for ESP32 - only essential fields
             esp32_message = {
                 "event_type": event_type,
                 "timestamp": formatted_time,
+                "time_label": time_label,
                 "user_label": user_label,
                 "user_name": user_display_name,
                 "first_name": current_user,
