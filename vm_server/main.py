@@ -282,14 +282,26 @@ class NEMOToolServer:
             # Handle user tracking and label switching
             current_user = user_info.get('first_name', '')
             current_last_name = user_info.get('last_name', '')
+            
+            # Join first and last name into a single string, but limit to 13 characters
+            full_name = current_user
+            if current_last_name:
+                potential_full_name = f"{current_user} {current_last_name}"
+                # If combined name is more than 13 characters, use only first name
+                if len(potential_full_name) > 13:
+                    full_name = current_user
+                    logger.info(f"Name too long ({len(potential_full_name)} chars): '{potential_full_name}' -> using first name only: '{current_user}'")
+                else:
+                    full_name = potential_full_name
+            
             user_label = "User"
-            user_display_name = current_user
+            user_display_name = full_name
             
             if event_type == "enabled" and current_user:
                 # Tool enabled - show current user and update last user
-                self.last_users[tool_id] = current_user
+                self.last_users[tool_id] = full_name
                 user_label = "User"
-                user_display_name = current_user
+                user_display_name = full_name
             elif event_type == "disabled" and tool_id in self.last_users:
                 # Tool disabled - show last user
                 user_label = "Last User"
@@ -297,9 +309,9 @@ class NEMOToolServer:
             elif event_type == "disabled" and not tool_id in self.last_users:
                 # Tool disabled but no last user recorded - show current user as last
                 user_label = "Last User"
-                user_display_name = current_user
+                user_display_name = full_name
                 if current_user:
-                    self.last_users[tool_id] = current_user
+                    self.last_users[tool_id] = full_name
             
             # Determine time label based on event type
             time_label = "Time"
@@ -314,9 +326,7 @@ class NEMOToolServer:
                 "timestamp": formatted_time,
                 "time_label": time_label,
                 "user_label": user_label,
-                "user_name": user_display_name,
-                "first_name": current_user,
-                "last_name": current_last_name
+                "user_name": user_display_name
             }
             
             # Forward to ESP32 display topic using tool name

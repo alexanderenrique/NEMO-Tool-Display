@@ -199,8 +199,8 @@ void create_simple_ui() {
   const uint32_t textColor = 0x000000;        // Black text
   
   // Font size configuration variables
-  const lv_font_t* titleFont = &lv_font_montserrat_44;
-  const lv_font_t* statusFont = &lv_font_montserrat_14;
+  const lv_font_t* titleFont = &lv_font_montserrat_48;
+  const lv_font_t* statusFont = &lv_font_montserrat_16;
   
   // Label fonts (for field names)
   const lv_font_t* labelFont = &lv_font_montserrat_16;
@@ -233,12 +233,12 @@ void create_simple_ui() {
   lv_obj_set_style_text_color(title_label, lv_color_hex(textColor), 0);
   lv_obj_align(title_label, LV_ALIGN_TOP_MID, 90, 20); // Offset by 90px to center in right area
   
-  // Status label - consolidated WiFi and MQTT status (positioned at bottom left)
+  // Status label - consolidated WiFi and MQTT status (positioned at bottom left, moved up 10px)
   status_label = lv_label_create(cont);
   lv_label_set_text(status_label, "Initializing...");
   lv_obj_set_style_text_font(status_label, statusFont, 0);
   lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(status_label, 185, 290); // Position at 185px from left, 290px from top (near bottom)
+  lv_obj_set_pos(status_label, 185, 280); // Position at 185px from left, 280px from top (was 290, moved up 10px)
   
   // User label (positioned at 185px from left, moved down 20px)
   user_label = lv_label_create(cont);
@@ -247,12 +247,12 @@ void create_simple_ui() {
   lv_obj_set_style_text_color(user_label, lv_color_hex(textColor), 0);
   lv_obj_set_pos(user_label, 185, 100); // Position at 185px from left, 100px from top (was 80)
   
-  // User value (positioned below user label)
+  // User value (positioned below user label, reduced gap by 10px)
   user_value = lv_label_create(cont);
   lv_label_set_text(user_value, "--");
   lv_obj_set_style_text_font(user_value, valueFont, 0);
   lv_obj_set_style_text_color(user_value, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(user_value, 185, 130); // Position at 185px from left, 130px from top (was 110)
+  lv_obj_set_pos(user_value, 185, 120); // Position at 185px from left, 120px from top (was 130, now 20px gap)
   
   // Time label (positioned at 185px from left, with additional 20px spacing)
   time_label = lv_label_create(cont);
@@ -261,12 +261,12 @@ void create_simple_ui() {
   lv_obj_set_style_text_color(time_label, lv_color_hex(textColor), 0);
   lv_obj_set_pos(time_label, 185, 190); // Position at 185px from left, 190px from top (was 150, now 60px gap)
   
-  // Time value (positioned below time label)
+  // Time value (positioned below time label, reduced gap by 10px)
   time_value = lv_label_create(cont);
   lv_label_set_text(time_value, "--:--");
   lv_obj_set_style_text_font(time_value, valueFont, 0);
   lv_obj_set_style_text_color(time_value, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(time_value, 185, 220); // Position at 185px from left, 220px from top (was 180)
+  lv_obj_set_pos(time_value, 185, 210); // Position at 185px from left, 210px from top (was 220, now 20px gap)
   
   
   Serial.println("Simple LVGL UI created successfully!");
@@ -376,26 +376,15 @@ void processMQTTMessage(const char* topic, const char* payload) {
   if (strcmp(topic, mqtt_topic_status.c_str()) == 0) {
     Serial.println("Processing tool status message...");
     
-    // Extract user name, last name, and label
+    // Extract user name (now pre-joined from main.py)
     if (doc["user_name"].is<const char*>()) {
       const char* userName = doc["user_name"];
-      const char* userLastName = doc["last_name"].as<const char*>();
-      const char* userLabel = doc["user_label"].as<const char*>();
       
       if (user_value) {
-        String userText = "";
-        userText += userName;
-        
-        // Add last name if available
-        if (userLastName && strlen(userLastName) > 0) {
-          userText += " ";
-          userText += userLastName;
-        }
-        
-        lv_label_set_text(user_value, userText.c_str());
+        lv_label_set_text(user_value, userName);
         lv_obj_set_style_text_color(user_value, lv_color_hex(0x000000), 0);
         Serial.print("Updated user: ");
-        Serial.println(userText.c_str());
+        Serial.println(userName);
       }
     }
     
