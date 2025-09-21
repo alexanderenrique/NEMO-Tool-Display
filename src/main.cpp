@@ -9,16 +9,17 @@
 #include <lvgl.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include "config.h"
 
 // WiFi credentials
-const char* ssid = "ALVA";
-const char* password = "AAAAABBBBB";
+const char* ssid = "Zucotti Manicotti";
+const char* password = "100BoiledEggs";
 
-// MQTT Configuration - Using non-SSL for local testing
-const char* mqtt_broker = "192.168.2.181";
-const int mqtt_port = 1883;  // Non-SSL port for local development
+// MQTT Configuration
+const char* mqtt_broker = "10.0.0.31";
+const int mqtt_port = 1883;
 const char* mqtt_client_id = "nemo_display_001";
-const char* mqtt_topic_status = "nemo/esp32/woollam/status";
+const char* mqtt_topic_status = "nemo/esp32/1/status";
 const char* mqtt_topic_overall = "nemo/esp32/overall";
 
 // Display configuration (TFT 480x320)
@@ -38,10 +39,12 @@ static lv_disp_drv_t disp_drv;
 // LVGL UI elements
 lv_obj_t *title_label = nullptr;
 lv_obj_t *status_label = nullptr;
-lv_obj_t *wifi_label = nullptr;
 lv_obj_t *user_label = nullptr;
 lv_obj_t *time_label = nullptr;
 lv_obj_t *tool_status_label = nullptr;
+
+// Tool name from config
+String toolDisplayName = "";
 
 // Function declarations
 void setupWiFi();
@@ -51,15 +54,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length);
 void processMQTTMessage(const char* topic, const char* payload);
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
 void create_simple_ui();
+String capitalizeToolName(const char* toolName);
+void updateConnectionStatus();
 
 void setup() {
   Serial.begin(9600);
   Serial.println("NEMO Tool Display - Simple Test Starting...");
   
+  // Initialize tool display name from config
+  toolDisplayName = capitalizeToolName(TARGET_TOOL_NAME);
+  Serial.print("Tool Display Name: ");
+  Serial.println(toolDisplayName);
+  
   // Initialize TFT display
   tft.init();
   tft.setRotation(1); // Use working rotation from lvgl_test
-  tft.fillScreen(TFT_BLACK);
+  tft.fillScreen(TFT_WHITE);
   
   // Initialize LVGL
   lv_init();
@@ -96,9 +106,22 @@ void loop() {
   
   // Handle MQTT
   if (!mqttClient.connected()) {
+    Serial.println("MQTT disconnected, attempting reconnect...");
     connectMQTT();
   }
   mqttClient.loop();
+  
+  // Periodic status check (every 10 seconds)
+  static unsigned long lastStatusCheck = 0;
+  if (millis() - lastStatusCheck > 10000) {
+    lastStatusCheck = millis();
+    Serial.print("MQTT Status: ");
+    Serial.println(mqttClient.connected() ? "CONNECTED" : "DISCONNECTED");
+    if (mqttClient.connected()) {
+      Serial.print("Waiting for messages on: ");
+      Serial.println(mqtt_topic_status);
+    }
+  }
   
   delay(5); // Reduced delay for LVGL responsiveness
 }
@@ -108,10 +131,7 @@ void setupWiFi() {
   Serial.print("SSID: ");
   Serial.println(ssid);
   
-  if (status_label) {
-    lv_label_set_text(status_label, "Connecting to WiFi...");
-    lv_obj_set_style_text_color(status_label, lv_color_hex(0xFFFF00), 0);
-  }
+  updateConnectionStatus();
   
   WiFi.begin(ssid, password);
   
@@ -138,29 +158,14 @@ void setupWiFi() {
     Serial.print(WiFi.RSSI());
     Serial.println(" dBm");
     
-    if (status_label) {
-      lv_label_set_text(status_label, "WiFi Connected!");
-      lv_obj_set_style_text_color(status_label, lv_color_hex(0x00FF00), 0);
-    }
-    if (wifi_label) {
-      String ipStr = "IP: " + WiFi.localIP().toString();
-      lv_label_set_text(wifi_label, ipStr.c_str());
-      lv_obj_set_style_text_color(wifi_label, lv_color_hex(0x00FF00), 0);
-    }
+    updateConnectionStatus();
   } else {
     Serial.println("");
     Serial.println("WiFi connection failed!");
     Serial.print("Status: ");
     Serial.println(WiFi.status());
     
-    if (status_label) {
-      lv_label_set_text(status_label, "WiFi Failed");
-      lv_obj_set_style_text_color(status_label, lv_color_hex(0xFF0000), 0);
-    }
-    if (wifi_label) {
-      lv_label_set_text(wifi_label, "Connection Failed");
-      lv_obj_set_style_text_color(wifi_label, lv_color_hex(0xFF0000), 0);
-    }
+    updateConnectionStatus();
   }
 }
 
@@ -180,55 +185,52 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
 
 // Create simple LVGL UI
 void create_simple_ui() {
+  // Color configuration variables
+  const uint32_t backgroundColor = 0xFFFFFF;  // White background
+  const uint32_t textColor = 0x000000;        // Black text
+  
   // Create main container - use full screen
   lv_obj_t *cont = lv_obj_create(lv_scr_act());
   lv_obj_set_size(cont, 480, 320);  // Full screen size
   lv_obj_set_pos(cont, 0, 0);       // Position at top-left corner
-  lv_obj_set_style_bg_color(cont, lv_color_hex(0x1A1A1A), 0);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(backgroundColor), 0);
   lv_obj_set_style_border_width(cont, 0, 0);  // No border
   lv_obj_set_style_radius(cont, 0, 0);        // No rounded corners
   
-  // Title label
+  // Title label - use dynamic tool name
   title_label = lv_label_create(cont);
-  lv_label_set_text(title_label, "NEMO Tool Display");
+  lv_label_set_text(title_label, toolDisplayName.c_str());
   lv_obj_set_style_text_font(title_label, &lv_font_montserrat_24, 0);
-  lv_obj_set_style_text_color(title_label, lv_color_hex(0x00AAFF), 0);
-  lv_obj_align(title_label, LV_ALIGN_TOP_MID, 0, 10);
+  lv_obj_set_style_text_color(title_label, lv_color_hex(textColor), 0);
+  lv_obj_align(title_label, LV_ALIGN_TOP_MID, 0, 20);
   
-  // Status label
+  // Status label - consolidated WiFi and MQTT status
   status_label = lv_label_create(cont);
   lv_label_set_text(status_label, "Initializing...");
   lv_obj_set_style_text_font(status_label, &lv_font_montserrat_18, 0);
-  lv_obj_set_style_text_color(status_label, lv_color_hex(0xFFFF00), 0);
+  lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
   lv_obj_align(status_label, LV_ALIGN_CENTER, 0, -20);
-  
-  // WiFi info label
-  wifi_label = lv_label_create(cont);
-  lv_label_set_text(wifi_label, "Waiting for WiFi...");
-  lv_obj_set_style_text_font(wifi_label, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(wifi_label, lv_color_hex(0xCCCCCC), 0);
-  lv_obj_align(wifi_label, LV_ALIGN_CENTER, 0, 20);
   
   // User name label
   user_label = lv_label_create(cont);
   lv_label_set_text(user_label, "User: --");
   lv_obj_set_style_text_font(user_label, &lv_font_montserrat_18, 0);
-  lv_obj_set_style_text_color(user_label, lv_color_hex(0x00FF00), 0);
-  lv_obj_align(user_label, LV_ALIGN_CENTER, 0, 50);
+  lv_obj_set_style_text_color(user_label, lv_color_hex(textColor), 0);
+  lv_obj_align(user_label, LV_ALIGN_CENTER, 0, 20);
   
   // Time label
   time_label = lv_label_create(cont);
   lv_label_set_text(time_label, "Time: --:--");
   lv_obj_set_style_text_font(time_label, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(time_label, lv_color_hex(0x00AAFF), 0);
-  lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 80);
+  lv_obj_set_style_text_color(time_label, lv_color_hex(textColor), 0);
+  lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 50);
   
   // Tool status label
   tool_status_label = lv_label_create(cont);
   lv_label_set_text(tool_status_label, "Status: Offline");
   lv_obj_set_style_text_font(tool_status_label, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF0000), 0);
-  lv_obj_align(tool_status_label, LV_ALIGN_CENTER, 0, 110);
+  lv_obj_set_style_text_color(tool_status_label, lv_color_hex(textColor), 0);
+  lv_obj_align(tool_status_label, LV_ALIGN_CENTER, 0, 80);
   
   Serial.println("Simple LVGL UI created successfully!");
 }
@@ -253,10 +255,21 @@ void connectMQTT() {
     
     if (mqttClient.connect(mqtt_client_id)) {
       Serial.println(" connected");
+      Serial.print("Client ID: ");
+      Serial.println(mqtt_client_id);
+      Serial.print("Broker: ");
+      Serial.print(mqtt_broker);
+      Serial.print(":");
+      Serial.println(mqtt_port);
       
       // Subscribe to topics
-      mqttClient.subscribe(mqtt_topic_status);
-      mqttClient.subscribe(mqtt_topic_overall);
+      bool sub1 = mqttClient.subscribe(mqtt_topic_status);
+      bool sub2 = mqttClient.subscribe(mqtt_topic_overall);
+      
+      Serial.print("Subscribe to status: ");
+      Serial.println(sub1 ? "SUCCESS" : "FAILED");
+      Serial.print("Subscribe to overall: ");
+      Serial.println(sub2 ? "SUCCESS" : "FAILED");
       
       Serial.print("Subscribed to: ");
       Serial.println(mqtt_topic_status);
@@ -264,20 +277,14 @@ void connectMQTT() {
       Serial.println(mqtt_topic_overall);
       
       // Update status
-      if (status_label) {
-        lv_label_set_text(status_label, "MQTT Connected!");
-        lv_obj_set_style_text_color(status_label, lv_color_hex(0x00FF00), 0);
-      }
+      updateConnectionStatus();
     } else {
       Serial.print(" failed, rc=");
       Serial.print(mqttClient.state());
       Serial.println(" retrying in 5 seconds");
       
       // Update status
-      if (status_label) {
-        lv_label_set_text(status_label, "MQTT Failed");
-        lv_obj_set_style_text_color(status_label, lv_color_hex(0xFF0000), 0);
-      }
+      updateConnectionStatus();
       
       delay(5000);
     }
@@ -286,14 +293,26 @@ void connectMQTT() {
 
 // MQTT Callback
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // Use a smaller buffer since we're now sending optimized messages
+  static char message[512]; // Optimized buffer size for lightweight messages
+  
+  // Check if message fits in buffer
+  if (length >= sizeof(message)) {
+    Serial.print("Message too large: ");
+    Serial.print(length);
+    Serial.println(" bytes");
+    return;
+  }
+  
   // Convert payload to string
-  char message[length + 1];
   memcpy(message, payload, length);
   message[length] = '\0';
   
   Serial.print("Message arrived [");
   Serial.print(topic);
-  Serial.print("] ");
+  Serial.print("] (");
+  Serial.print(length);
+  Serial.print(" bytes) ");
   Serial.println(message);
   
   processMQTTMessage(topic, message);
@@ -301,8 +320,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 // Process MQTT Message
 void processMQTTMessage(const char* topic, const char* payload) {
-  // Parse JSON
-  StaticJsonDocument<512> doc;
+  // Parse JSON with optimized buffer size
+  StaticJsonDocument<512> doc; // Optimized size for lightweight messages
   DeserializationError error = deserializeJson(doc, payload);
   
   if (error) {
@@ -311,47 +330,80 @@ void processMQTTMessage(const char* topic, const char* payload) {
     return;
   }
   
-  // Handle tool status messages
+  // Handle tool status messages (simplified format)
   if (strcmp(topic, mqtt_topic_status) == 0) {
-    // Extract user information
-    if (doc.containsKey("user") && doc["user"].containsKey("first_name")) {
-      const char* firstName = doc["user"]["first_name"];
+    Serial.println("Processing tool status message...");
+    
+    // Extract user name and label
+    if (doc["user_name"].is<const char*>()) {
+      const char* userName = doc["user_name"];
+      const char* userLabel = doc["user_label"].as<const char*>();
+      
       if (user_label) {
-        String userText = "User: ";
-        userText += firstName;
+        String userText = "";
+        if (userLabel && strlen(userLabel) > 0) {
+          userText += userLabel;
+          userText += ": ";
+        } else {
+          userText += "User: ";
+        }
+        userText += userName;
+        
         lv_label_set_text(user_label, userText.c_str());
-        lv_obj_set_style_text_color(user_label, lv_color_hex(0x00FF00), 0);
+        lv_obj_set_style_text_color(user_label, lv_color_hex(0x000000), 0);
+        Serial.print("Updated user: ");
+        Serial.println(userText.c_str());
       }
     }
     
-    // Extract enable time
-    if (doc.containsKey("enable_time")) {
-      const char* enableTime = doc["enable_time"];
+    
+    // Extract timestamp
+    if (doc["timestamp"].is<const char*>()) {
+      const char* timestamp = doc["timestamp"];
       if (time_label) {
         String timeText = "Time: ";
-        timeText += enableTime;
+        timeText += timestamp;
         lv_label_set_text(time_label, timeText.c_str());
-        lv_obj_set_style_text_color(time_label, lv_color_hex(0x00AAFF), 0);
+        lv_obj_set_style_text_color(time_label, lv_color_hex(0x000000), 0);
       }
     }
     
-    // Extract tool status
-    if (doc.containsKey("status")) {
-      const char* status = doc["status"];
+    
+    // Extract tool status from event_type field and in_use status
+    if (doc["event_type"].is<const char*>()) {
+      const char* eventType = doc["event_type"];
+      bool inUse = doc["in_use"].as<bool>();
+      
       if (tool_status_label) {
         String statusText = "Status: ";
-        statusText += status;
+        statusText += eventType;
+        
+        // Add in_use indicator
+        if (inUse) {
+          statusText += " (In Use)";
+        }
+        
         lv_label_set_text(tool_status_label, statusText.c_str());
         
-        // Color code based on status
-        if (strcmp(status, "active") == 0) {
-          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0x00FF00), 0);
-        } else if (strcmp(status, "idle") == 0) {
-          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFFFF00), 0);
-        } else if (strcmp(status, "maintenance") == 0) {
-          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF8800), 0);
+        // Debug output
+        Serial.print("Updated tool status: ");
+        Serial.println(statusText.c_str());
+        
+        // Color code based on event type and usage
+        if (strcmp(eventType, "enabled") == 0) {
+          if (inUse) {
+            lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0x00AAFF), 0); // Blue for in use
+          } else {
+            lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0x00FF00), 0); // Green for enabled
+          }
+        } else if (strcmp(eventType, "disabled") == 0) {
+          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF0000), 0); // Red for disabled
+        } else if (strcmp(eventType, "in_use") == 0) {
+          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0x00AAFF), 0); // Blue for in use
+        } else if (strcmp(eventType, "idle") == 0) {
+          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFFFF00), 0); // Yellow for idle
         } else {
-          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF0000), 0);
+          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF8800), 0); // Orange for unknown
         }
       }
     }
@@ -362,4 +414,65 @@ void processMQTTMessage(const char* topic, const char* payload) {
     Serial.println("Received overall status update");
     // Could process overall system status here if needed
   }
+}
+
+// Capitalize tool name for display
+String capitalizeToolName(const char* toolName) {
+  if (!toolName || strlen(toolName) == 0) {
+    return "Unknown Tool";
+  }
+  
+  String result = "";
+  bool capitalizeNext = true;
+  
+  for (int i = 0; toolName[i] != '\0'; i++) {
+    char c = toolName[i];
+    
+    if (c == '_' || c == '-') {
+      result += ' ';
+      capitalizeNext = true;
+    } else if (capitalizeNext && c >= 'a' && c <= 'z') {
+      result += (char)(c - 32); // Convert to uppercase
+      capitalizeNext = false;
+    } else if (capitalizeNext && c >= 'A' && c <= 'Z') {
+      result += c; // Already uppercase
+      capitalizeNext = false;
+    } else {
+      result += c;
+      capitalizeNext = false;
+    }
+  }
+  
+  return result;
+}
+
+// Update consolidated connection status
+void updateConnectionStatus() {
+  if (!status_label) return;
+  
+  bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+  bool mqttConnected = mqttClient.connected();
+  
+  String statusText = "Status: ";
+  uint32_t statusColor = 0x000000; // Black text for all statuses
+  
+  if (wifiConnected && mqttConnected) {
+    // Both connected
+    statusText += "Connected";
+  } else if (wifiConnected && !mqttConnected) {
+    // WiFi connected but MQTT not connected
+    statusText += "WiFi OK, No MQTT";
+  } else if (!wifiConnected && mqttConnected) {
+    // MQTT connected but WiFi not connected (shouldn't happen, but just in case)
+    statusText += "No WiFi, MQTT OK";
+  } else {
+    // Neither connected
+    statusText += "No WiFi, No MQTT";
+  }
+  
+  lv_label_set_text(status_label, statusText.c_str());
+  lv_obj_set_style_text_color(status_label, lv_color_hex(statusColor), 0);
+  
+  Serial.print("Updated status: ");
+  Serial.println(statusText.c_str());
 }

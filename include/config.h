@@ -9,13 +9,13 @@
 // MQTT Configuration - These are defined via build flags in platformio.ini
 // Fallback definitions if not provided via build flags
 #ifndef MQTT_BROKER
-#define MQTT_BROKER "192.168.1.100"
+#define MQTT_BROKER "10.0.0.31"
 #endif
 #ifndef MQTT_PORT
 #define MQTT_PORT 1883
 #endif
 #ifndef MQTT_CLIENT_ID
-#define MQTT_CLIENT_ID "nemo_display_%d"
+#define MQTT_CLIENT_ID "nemo_display_001"
 #endif
 #ifndef MQTT_TOPIC_PREFIX
 #define MQTT_TOPIC_PREFIX "nemo/esp32"

@@ -27,23 +27,43 @@ API Server → VM Server (Python) → MQTT Broker → ESP32 Display Nodes
 
 ## Step 1: VM Server Setup
 
-### 1.1 Automated Configuration (Recommended)
+### 1.1 One-Command Setup (Recommended)
 
-The easiest way to set up the VM server is using our simplified configuration script:
+The easiest way to set up and start the VM server is using our master script:
 
 ```bash
 cd vm_server
-./configure_nemo.sh
+./setup_and_start.sh
 ```
 
 This script will:
 - ✅ Install Mosquitto MQTT broker
-- ✅ Configure network ports (simplified)
-- ✅ Set up MQTT broker configuration
-- ✅ Test basic MQTT functionality
+- ✅ Configure MQTT broker with SSL/TLS support
+- ✅ Set up Python virtual environment
+- ✅ Install Python dependencies
+- ✅ Generate SSL certificates (optional)
+- ✅ Configure environment settings
 - ✅ Start the MQTT broker
+- ✅ Start the NEMO server
+- ✅ **VM is ready to go!**
 
-### 1.2 Manual Setup (Alternative)
+The script provides comprehensive setup including:
+- **SSL/TLS encryption** - Optional secure MQTT communication
+- **Environment configuration** - Automatic `.env` file creation
+- **Certificate generation** - Self-signed certificates for SSL
+- **Process monitoring** - Automatic cleanup on exit
+- **ESP32 configuration** - Ready-to-use values for your ESP32
+
+### 1.2 Alternative: Configuration Only
+
+If you prefer to configure without starting:
+
+```bash
+# Just configure (without starting)
+./configure_nemo.sh
+```
+
+### 1.3 Manual Setup (Advanced)
 
 If you prefer manual setup:
 
@@ -70,7 +90,7 @@ cp config.env.example .env
 python main.py
 ```
 
-### 1.3 Configuration
+### 1.4 Configuration
 
 Edit the `.env` file with your settings:
 
@@ -82,7 +102,7 @@ MQTT_PORT=1883
 POLL_INTERVAL=30
 ```
 
-### 1.4 Test the Server
+### 1.5 Test the Server
 
 ```bash
 # Test MQTT broker
@@ -147,14 +167,25 @@ ipconfig | findstr "IPv4"
 
 ```bash
 cd vm_server
-python main.py
+./setup_and_start.sh
 ```
 
 You should see:
 ```
-2024-01-15 10:30:00 - NEMOToolServer - INFO - Starting NEMO Tool Display Server
-2024-01-15 10:30:01 - NEMOToolServer - INFO - HTTP session initialized
-2024-01-15 10:30:01 - NEMOToolServer - INFO - Connected to MQTT broker at localhost:1883
+================================
+🎉 NEMO Tool Display System Ready!
+================================
+✓ System Status:
+  - MQTT Broker: Running on port 1883 (non-SSL)
+  - NEMO Server: Running (PID: 12345)
+  - Configuration: .env
+
+✓ MQTT Topics:
+  - Backend Input: nemo/backend/tools/+/status
+  - Backend Overall: nemo/backend/tools/overall
+  - ESP32 Output: nemo/esp32/{tool_id}/status
+  - ESP32 Overall: nemo/esp32/overall
+  - Server Status: nemo/server/status
 ```
 
 ### 3.2 Monitor MQTT Messages
@@ -241,11 +272,12 @@ The display should show:
 - Check if API server is running
 - Test API with: `curl http://your-api-url/api/tools`
 
-**Problem**: Configuration script fails
+**Problem**: Setup script fails
 **Solution**:
 - Check if Mosquitto is installed: `mosquitto --version`
 - Verify Python dependencies: `pip install -r requirements.txt`
 - Check logs: `tail -f mqtt/log/mosquitto.log`
+- Run setup again: `./setup_and_start.sh`
 
 ### ESP32 Issues
 
@@ -283,18 +315,18 @@ The display should show:
 ```
 ├── vm_server/                    # Python VM server
 │   ├── main.py                  # Main server application
-│   ├── configure_nemo.sh        # Simplified configuration script
+│   ├── setup_and_start.sh       # Master setup and startup script
+│   ├── configure_nemo.sh        # Configuration-only script
 │   ├── test_mqtt_system.py      # MQTT testing utilities
 │   ├── network_discovery.py     # Network discovery utility
 │   ├── requirements.txt         # Python dependencies
-│   ├── start_mqtt_broker.sh     # MQTT broker startup script
-│   ├── start_nemo_system.sh     # Main system startup script
 │   ├── config.env.example       # Environment configuration template
 │   └── mqtt/                    # MQTT broker configuration
 │       ├── config/
 │       │   └── mosquitto.conf   # MQTT broker configuration
 │       ├── data/                # MQTT persistence data
-│       └── log/                 # MQTT logs
+│       ├── log/                 # MQTT logs
+│       └── certs/               # SSL certificates (if enabled)
 ├── src/                         # ESP32 source code
 │   └── main.cpp                 # Display node firmware
 ├── include/                     # ESP32 headers
@@ -346,11 +378,12 @@ docker-compose down
 ## Key Features
 
 ### Simplified Configuration
-- ✅ **One-command setup** - `./configure_nemo.sh` handles everything
-- ✅ **No complex port checking** - eliminates user prompts
-- ✅ **Streamlined testing** - simple MQTT functionality test
-- ✅ **Faster execution** - completes in ~10-15 seconds
-- ✅ **Clear feedback** - simple success/failure messages
+- ✅ **One-command setup** - `./setup_and_start.sh` handles everything
+- ✅ **SSL/TLS support** - Optional encrypted MQTT communication
+- ✅ **Automatic configuration** - Creates all necessary config files
+- ✅ **Certificate generation** - Self-signed SSL certificates
+- ✅ **Process monitoring** - Automatic cleanup on exit
+- ✅ **ESP32 ready** - Provides configuration values for ESP32
 
 ### Robust MQTT Communication
 - ✅ **Reliable message delivery** - QoS 1 for important messages
@@ -375,4 +408,4 @@ If you encounter issues:
 2. Monitor ESP32 serial output (115200 baud)
 3. Test MQTT with `mosquitto_sub` and `mosquitto_pub`
 4. Verify network connectivity with `ping`
-5. Run the configuration script again: `./configure_nemo.sh`
+5. Run the setup script again: `./setup_and_start.sh`
