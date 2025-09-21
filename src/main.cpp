@@ -41,8 +41,9 @@ static lv_disp_drv_t disp_drv;
 lv_obj_t *title_label = nullptr;
 lv_obj_t *status_label = nullptr;
 lv_obj_t *user_label = nullptr;
+lv_obj_t *user_value = nullptr;
 lv_obj_t *time_label = nullptr;
-lv_obj_t *tool_status_label = nullptr;
+lv_obj_t *time_value = nullptr;
 lv_obj_t *status_indicator = nullptr;
 
 // Tool name from config
@@ -198,11 +199,14 @@ void create_simple_ui() {
   const uint32_t textColor = 0x000000;        // Black text
   
   // Font size configuration variables
-  const lv_font_t* titleFont = &lv_font_montserrat_36;
+  const lv_font_t* titleFont = &lv_font_montserrat_44;
   const lv_font_t* statusFont = &lv_font_montserrat_14;
-  const lv_font_t* userFont = &lv_font_montserrat_22;
-  const lv_font_t* timeFont = &lv_font_montserrat_22;
-  const lv_font_t* toolStatusFont = &lv_font_montserrat_14;
+  
+  // Label fonts (for field names)
+  const lv_font_t* labelFont = &lv_font_montserrat_16;
+  
+  // Value fonts (for field values)
+  const lv_font_t* valueFont = &lv_font_montserrat_32;
   
   // Create main container - use full screen
   lv_obj_t *cont = lv_obj_create(lv_scr_act());
@@ -211,6 +215,7 @@ void create_simple_ui() {
   lv_obj_set_style_bg_color(cont, lv_color_hex(backgroundColor), 0);
   lv_obj_set_style_border_width(cont, 0, 0);  // No border
   lv_obj_set_style_radius(cont, 0, 0);        // No rounded corners
+  lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);  // Disable scrollbars
   
   // Create status indicator block (180px wide, full height on left side)
   status_indicator = lv_obj_create(cont);
@@ -219,6 +224,7 @@ void create_simple_ui() {
   lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFF0000), 0); // Start with red (disabled)
   lv_obj_set_style_border_width(status_indicator, 0, 0);  // No border
   lv_obj_set_style_radius(status_indicator, 0, 0);        // No rounded corners
+  lv_obj_set_scrollbar_mode(status_indicator, LV_SCROLLBAR_MODE_OFF);  // Disable scrollbars
   
   // Title label - use dynamic tool name (positioned on right side)
   title_label = lv_label_create(cont);
@@ -227,33 +233,41 @@ void create_simple_ui() {
   lv_obj_set_style_text_color(title_label, lv_color_hex(textColor), 0);
   lv_obj_align(title_label, LV_ALIGN_TOP_MID, 90, 20); // Offset by 90px to center in right area
   
-  // Status label - consolidated WiFi and MQTT status (positioned at bottom)
+  // Status label - consolidated WiFi and MQTT status (positioned at bottom left)
   status_label = lv_label_create(cont);
   lv_label_set_text(status_label, "Initializing...");
   lv_obj_set_style_text_font(status_label, statusFont, 0);
   lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
-  lv_obj_align(status_label, LV_ALIGN_BOTTOM_MID, 90, -20); // Bottom of screen, offset by 90px to center in right area
+  lv_obj_set_pos(status_label, 185, 290); // Position at 185px from left, 290px from top (near bottom)
   
-  // User name label (positioned on right side)
+  // User label (positioned at 185px from left, moved down 20px)
   user_label = lv_label_create(cont);
-  lv_label_set_text(user_label, "User: --");
-  lv_obj_set_style_text_font(user_label, userFont, 0);
+  lv_label_set_text(user_label, "User");
+  lv_obj_set_style_text_font(user_label, labelFont, 0);
   lv_obj_set_style_text_color(user_label, lv_color_hex(textColor), 0);
-  lv_obj_align(user_label, LV_ALIGN_CENTER, 90, -40); // Offset by 90px to center in right area, moved up
+  lv_obj_set_pos(user_label, 185, 100); // Position at 185px from left, 100px from top (was 80)
   
-  // Time label (positioned on right side)
+  // User value (positioned below user label)
+  user_value = lv_label_create(cont);
+  lv_label_set_text(user_value, "--");
+  lv_obj_set_style_text_font(user_value, valueFont, 0);
+  lv_obj_set_style_text_color(user_value, lv_color_hex(textColor), 0);
+  lv_obj_set_pos(user_value, 185, 130); // Position at 185px from left, 130px from top (was 110)
+  
+  // Time label (positioned at 185px from left, with additional 20px spacing)
   time_label = lv_label_create(cont);
-  lv_label_set_text(time_label, "Time: --:--");
-  lv_obj_set_style_text_font(time_label, timeFont, 0);
+  lv_label_set_text(time_label, "Enabled/Disabled Since");
+  lv_obj_set_style_text_font(time_label, labelFont, 0);
   lv_obj_set_style_text_color(time_label, lv_color_hex(textColor), 0);
-  lv_obj_align(time_label, LV_ALIGN_CENTER, 90, -10); // Offset by 90px to center in right area, moved up
+  lv_obj_set_pos(time_label, 185, 190); // Position at 185px from left, 190px from top (was 150, now 60px gap)
   
-  // Tool status label (positioned on right side)
-  tool_status_label = lv_label_create(cont);
-  lv_label_set_text(tool_status_label, "Status: Offline");
-  lv_obj_set_style_text_font(tool_status_label, toolStatusFont, 0);
-  lv_obj_set_style_text_color(tool_status_label, lv_color_hex(textColor), 0);
-  lv_obj_align(tool_status_label, LV_ALIGN_CENTER, 90, 20); // Offset by 90px to center in right area, moved up
+  // Time value (positioned below time label)
+  time_value = lv_label_create(cont);
+  lv_label_set_text(time_value, "--:--");
+  lv_obj_set_style_text_font(time_value, valueFont, 0);
+  lv_obj_set_style_text_color(time_value, lv_color_hex(textColor), 0);
+  lv_obj_set_pos(time_value, 185, 220); // Position at 185px from left, 220px from top (was 180)
+  
   
   Serial.println("Simple LVGL UI created successfully!");
 }
@@ -368,14 +382,8 @@ void processMQTTMessage(const char* topic, const char* payload) {
       const char* userLastName = doc["last_name"].as<const char*>();
       const char* userLabel = doc["user_label"].as<const char*>();
       
-      if (user_label) {
+      if (user_value) {
         String userText = "";
-        if (userLabel && strlen(userLabel) > 0) {
-          userText += userLabel;
-          userText += ": ";
-        } else {
-          userText += "User: ";
-        }
         userText += userName;
         
         // Add last name if available
@@ -384,8 +392,8 @@ void processMQTTMessage(const char* topic, const char* payload) {
           userText += userLastName;
         }
         
-        lv_label_set_text(user_label, userText.c_str());
-        lv_obj_set_style_text_color(user_label, lv_color_hex(0x000000), 0);
+        lv_label_set_text(user_value, userText.c_str());
+        lv_obj_set_style_text_color(user_value, lv_color_hex(0x000000), 0);
         Serial.print("Updated user: ");
         Serial.println(userText.c_str());
       }
@@ -397,19 +405,11 @@ void processMQTTMessage(const char* topic, const char* payload) {
       const char* timestamp = doc["timestamp"];
       const char* timeLabel = doc["time_label"].as<const char*>();
       
-      if (time_label) {
-        String timeText = "";
-        if (timeLabel && strlen(timeLabel) > 0) {
-          timeText += timeLabel;
-          timeText += ": ";
-        } else {
-          timeText += "Time: ";
-        }
-        timeText += timestamp;
-        lv_label_set_text(time_label, timeText.c_str());
-        lv_obj_set_style_text_color(time_label, lv_color_hex(0x000000), 0);
+      if (time_value) {
+        lv_label_set_text(time_value, timestamp);
+        lv_obj_set_style_text_color(time_value, lv_color_hex(0x000000), 0);
         Serial.print("Updated time: ");
-        Serial.println(timeText.c_str());
+        Serial.println(timestamp);
       }
     }
     
@@ -419,32 +419,38 @@ void processMQTTMessage(const char* topic, const char* payload) {
       const char* eventType = doc["event_type"];
       bool inUse = doc["in_use"].as<bool>();
       
-      if (tool_status_label) {
-        String statusText = "Status: ";
-        statusText += eventType;
-        
-        lv_label_set_text(tool_status_label, statusText.c_str());
-        
-        // Debug output
-        Serial.print("Updated tool status: ");
-        Serial.println(statusText.c_str());
-        
-        // Color code based on event type and usage
-        if (strcmp(eventType, "enabled") == 0) {
-          if (inUse) {
-            lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0x00AAFF), 0); // Blue for in use
-          } else {
-            lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0x00FF00), 0); // Green for enabled
-          }
+      // Debug output
+      Serial.print("Tool status: ");
+      Serial.println(eventType);
+      
+      // Update time label based on tool status
+      if (time_label) {
+        String timeLabelText = "";
+        if (strcmp(eventType, "enabled") == 0 || strcmp(eventType, "idle") == 0) {
+          timeLabelText = "Enabled Since";
         } else if (strcmp(eventType, "disabled") == 0) {
-          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF0000), 0); // Red for disabled
-        } else if (strcmp(eventType, "in_use") == 0) {
-          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0x00AAFF), 0); // Blue for in use
-        } else if (strcmp(eventType, "idle") == 0) {
-          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFFFF00), 0); // Yellow for idle
+          timeLabelText = "Disabled Since";
         } else {
-          lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF8800), 0); // Orange for unknown
+          timeLabelText = "Change Time"; // Fallback for other statuses
         }
+        lv_label_set_text(time_label, timeLabelText.c_str());
+        Serial.print("Updated time label: ");
+        Serial.println(timeLabelText.c_str());
+      }
+      
+      // Update user label based on tool status
+      if (user_label) {
+        String userLabelText = "";
+        if (strcmp(eventType, "enabled") == 0 || strcmp(eventType, "idle") == 0) {
+          userLabelText = "User";
+        } else if (strcmp(eventType, "disabled") == 0) {
+          userLabelText = "Last User";
+        } else {
+          userLabelText = "User"; // Fallback for other statuses
+        }
+        lv_label_set_text(user_label, userLabelText.c_str());
+        Serial.print("Updated user label: ");
+        Serial.println(userLabelText.c_str());
       }
       
       // Update status indicator based on tool state
