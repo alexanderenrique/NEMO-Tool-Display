@@ -27,6 +27,10 @@ except ImportError:
 # Load environment variables
 load_dotenv('config.env')
 
+# Timezone offset configuration (hours to add to UTC time)
+# -7 for Pacific Time (UTC-7), adjust as needed for your timezone
+TIMEZONE_OFFSET_HOURS = -7
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -270,11 +274,14 @@ class NEMOToolServer:
             formatted_time = "Unknown"
             if tool_data.get('timestamp'):
                 try:
-                    from datetime import datetime
+                    from datetime import datetime, timedelta
                     # Parse the ISO timestamp
                     dt = datetime.fromisoformat(tool_data['timestamp'].replace('Z', '+00:00'))
+                    # Apply timezone offset
+                    dt = dt + timedelta(hours=TIMEZONE_OFFSET_HOURS)
                     # Format as "Jan 15, 2:30 PM"
                     formatted_time = dt.strftime("%b %d, %I:%M %p")
+                    logger.debug(f"Original timestamp: {tool_data['timestamp']}, Adjusted time: {formatted_time}")
                 except Exception as e:
                     logger.warning(f"Failed to parse timestamp: {e}")
                     formatted_time = "Invalid Time"
