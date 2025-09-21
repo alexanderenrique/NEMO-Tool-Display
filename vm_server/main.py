@@ -27,13 +27,51 @@ except ImportError:
 # Load environment variables
 load_dotenv('config.env')
 
-# Timezone offset configuration (hours to add to UTC time)
-# -7 for Pacific Time (UTC-7), adjust as needed for your timezone
-TIMEZONE_OFFSET_HOURS = -7
+# Configuration validation and loading
+def load_config():
+    """Load and validate configuration from environment variables"""
+    config = {}
+    
+    # MQTT Configuration
+    config['mqtt_broker'] = os.getenv('MQTT_BROKER')
+    config['mqtt_port'] = int(os.getenv('MQTT_PORT', '1883'))
+    config['mqtt_use_ssl'] = os.getenv('MQTT_USE_SSL', 'false').lower() == 'true'
+    config['mqtt_username'] = os.getenv('MQTT_USERNAME', '')
+    config['mqtt_password'] = os.getenv('MQTT_PASSWORD', '')
+    
+    # Display Configuration
+    config['timezone_offset_hours'] = int(os.getenv('TIMEZONE_OFFSET_HOURS', '-7'))
+    config['max_name_length'] = int(os.getenv('MAX_NAME_LENGTH', '13'))
+    
+    # Logging Configuration
+    config['log_level'] = os.getenv('LOG_LEVEL', 'INFO').upper()
+    
+    # Validate required configurations
+    if not config['mqtt_broker']:
+        raise ValueError("MQTT_BROKER must be set in config.env")
+    
+    if config['mqtt_port'] < 1 or config['mqtt_port'] > 65535:
+        raise ValueError("MQTT_PORT must be between 1 and 65535")
+    
+    if config['timezone_offset_hours'] < -12 or config['timezone_offset_hours'] > 14:
+        raise ValueError("TIMEZONE_OFFSET_HOURS must be between -12 and 14")
+    
+    if config['max_name_length'] < 1 or config['max_name_length'] > 50:
+        raise ValueError("MAX_NAME_LENGTH must be between 1 and 50")
+    
+    return config
+
+# Load configuration
+try:
+    CONFIG = load_config()
+except Exception as e:
+    print(f"Configuration error: {e}")
+    sys.exit(1)
 
 # Configure logging
+log_level = getattr(logging, CONFIG['log_level'], logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('nemo_server.log'),
@@ -67,18 +105,20 @@ class NEMOToolServer:
     """Main server class for NEMO Tool Display system"""
     
     def __init__(self):
-        # Auto-detect IP address if not set in environment
-        detected_ip = get_local_ip()
-        self.mqtt_broker = os.getenv('MQTT_BROKER', detected_ip)
-        self.mqtt_port = int(os.getenv('MQTT_PORT', '1883'))  # Use non-SSL for local development
-        self.mqtt_username = os.getenv('MQTT_USERNAME', '')
-        self.mqtt_password = os.getenv('MQTT_PASSWORD', '')
-        self.mqtt_use_ssl = os.getenv('MQTT_USE_SSL', 'false').lower() == 'true'  # Default to false for local
+        # Load configuration
+        self.config = CONFIG
         
-        # Log the detected IP
-        logger.info(f"Using MQTT broker: {self.mqtt_broker}:{self.mqtt_port}")
-        if self.mqtt_broker == detected_ip:
+        # Auto-detect IP address if MQTT_BROKER is not set
+        if not self.config['mqtt_broker']:
+            detected_ip = get_local_ip()
+            self.config['mqtt_broker'] = detected_ip
             logger.info(f"Auto-detected IP address: {detected_ip}")
+        
+        # Log configuration
+        logger.info(f"Using MQTT broker: {self.config['mqtt_broker']}:{self.config['mqtt_port']}")
+        logger.info(f"Timezone offset: {self.config['timezone_offset_hours']} hours")
+        logger.info(f"Max name length: {self.config['max_name_length']} characters")
+        logger.info(f"Log level: {self.config['log_level']}")
         
         # Load tool ID to name mappings from YAML file
         self.tool_id_to_name = self.load_tool_mappings()
@@ -132,11 +172,11 @@ class NEMOToolServer:
         """Initialize MQTT client for receiving tool status and distributing to ESP32 displays"""
         self.mqtt_client = mqtt.Client()
         
-        if self.mqtt_username and self.mqtt_password:
-            self.mqtt_client.username_pw_set(self.mqtt_username, self.mqtt_password)
+        if self.config['mqtt_username'] and self.config['mqtt_password']:
+            self.mqtt_client.username_pw_set(self.config['mqtt_username'], self.config['mqtt_password'])
         
         # Configure SSL if enabled
-        if self.mqtt_use_ssl:
+        if self.config['mqtt_use_ssl']:
             import ssl
             # Use the actual CA certificate for proper SSL connection
             ca_cert_path = "mqtt/certs/ca.crt"
@@ -163,9 +203,9 @@ class NEMOToolServer:
         self.mqtt_client.will_set("nemo/server/status", "offline", qos=1, retain=True)
         
         try:
-            protocol = "mqtts" if self.mqtt_use_ssl else "mqtt"
-            logger.info(f"Connecting to MQTT broker at {protocol}://{self.mqtt_broker}:{self.mqtt_port}")
-            self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, 60)
+            protocol = "mqtts" if self.config['mqtt_use_ssl'] else "mqtt"
+            logger.info(f"Connecting to MQTT broker at {protocol}://{self.config['mqtt_broker']}:{self.config['mqtt_port']}")
+            self.mqtt_client.connect(self.config['mqtt_broker'], self.config['mqtt_port'], 60)
             self.mqtt_client.loop_start()
             
             # Wait a moment for connection to establish
@@ -278,7 +318,7 @@ class NEMOToolServer:
                     # Parse the ISO timestamp
                     dt = datetime.fromisoformat(tool_data['timestamp'].replace('Z', '+00:00'))
                     # Apply timezone offset
-                    dt = dt + timedelta(hours=TIMEZONE_OFFSET_HOURS)
+                    dt = dt + timedelta(hours=self.config['timezone_offset_hours'])
                     # Format as "Jan 15, 2:30 PM"
                     formatted_time = dt.strftime("%b %d, %I:%M %p")
                     logger.debug(f"Original timestamp: {tool_data['timestamp']}, Adjusted time: {formatted_time}")
@@ -290,12 +330,12 @@ class NEMOToolServer:
             current_user = user_info.get('first_name', '')
             current_last_name = user_info.get('last_name', '')
             
-            # Join first and last name into a single string, but limit to 13 characters
+            # Join first and last name into a single string, but limit to configured length
             full_name = current_user
             if current_last_name:
                 potential_full_name = f"{current_user} {current_last_name}"
-                # If combined name is more than 13 characters, use only first name
-                if len(potential_full_name) > 13:
+                # If combined name is longer than configured max, use only first name
+                if len(potential_full_name) > self.config['max_name_length']:
                     full_name = current_user
                     logger.info(f"Name too long ({len(potential_full_name)} chars): '{potential_full_name}' -> using first name only: '{current_user}'")
                 else:
@@ -373,19 +413,23 @@ class NEMOToolServer:
     async def start(self):
         """Start the server"""
         logger.info("Starting NEMO Tool Display Server")
+        logger.info(f"Configuration: {self.config}")
         
         try:
+            # Validate tool mappings before starting
+            if not self.tool_id_to_name:
+                logger.error("No tool mappings found! Please check tool_mappings.yaml")
+                return
+            
             await self.init_mqtt()
             
             self.running = True
-            logger.info("Server started, listening for tool status updates via MQTT")
+            logger.info("Server started successfully, listening for tool status updates via MQTT")
             
             # Log which tools we're monitoring
-            if self.tool_id_to_name:
-                tool_names = list(self.tool_id_to_name.values())
-                logger.info(f"Monitoring ESP32 displays for: {', '.join(tool_names)}")
-            else:
-                logger.warning("No ESP32 display tools configured - will forward all tool updates")
+            tool_names = list(self.tool_id_to_name.values())
+            logger.info(f"Monitoring ESP32 displays for: {', '.join(tool_names)}")
+            logger.info(f"Total tools configured: {len(tool_names)}")
             
             # Keep the server running
             while self.running:
@@ -395,6 +439,7 @@ class NEMOToolServer:
             logger.info("Received shutdown signal")
         except Exception as e:
             logger.error(f"Server error: {e}")
+            logger.exception("Full error details:")
         finally:
             await self.cleanup()
     
@@ -410,10 +455,44 @@ class NEMOToolServer:
         logger.info("Cleanup completed")
 
 
+def validate_environment():
+    """Validate that all required files and dependencies are present"""
+    required_files = ['config.env', 'tool_mappings.yaml']
+    missing_files = []
+    
+    for file in required_files:
+        if not os.path.exists(file):
+            missing_files.append(file)
+    
+    if missing_files:
+        logger.error(f"Missing required files: {', '.join(missing_files)}")
+        logger.error("Please ensure all required files are present before starting the server")
+        return False
+    
+    # Check if YAML is available
+    if not YAML_AVAILABLE:
+        logger.error("PyYAML not available. Please install it: pip install PyYAML")
+        return False
+    
+    return True
+
+
 async def main():
     """Main entry point"""
-    server = NEMOToolServer()
-    await server.start()
+    logger.info("NEMO Tool Display Server - Starting up")
+    
+    # Validate environment before starting
+    if not validate_environment():
+        logger.error("Environment validation failed. Exiting.")
+        sys.exit(1)
+    
+    try:
+        server = NEMOToolServer()
+        await server.start()
+    except Exception as e:
+        logger.error(f"Failed to start server: {e}")
+        logger.exception("Full error details:")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

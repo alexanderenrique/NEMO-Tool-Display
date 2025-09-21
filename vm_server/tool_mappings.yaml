@@ -1,27 +1,202 @@
 # NEMO Tool Display - Tool ID to Name Mappings
-# This file maps tool IDs from NEMO backend to tool names for ESP32 displays
-# 
-# Format: tool_id: tool_name
-# - tool_id: The numeric ID assigned by NEMO backend (string format)
-# - tool_name: The human-readable tool name used in MQTT topics
-#
-# Usage:
-# 1. Update this file with your actual tool mappings
-# 2. Restart the broker to load new mappings
-# 3. ESP32 displays will automatically receive messages on the correct topics
-#
-# Example for production with 300+ tools:
-# 1: woollam
-# 2: fiji2
-# 3: savannah
-# 4: electron_microscope_1
-# 5: electron_microscope_2
-# 6: xray_diffractometer
-# 7: atomic_force_microscope
-# 8: scanning_tunneling_microscope
-# ... (continue for all 300+ tools)
+# Generated automatically from NEMO API - update as needed for production
 
-# Current development mappings
-1: woollam
-2: fiji2
-3: savannah
+'1': aja-sputter
+'10': nanoscribe
+'100': stresstest
+'101': ck-test2
+'11': form2-3d-printer
+'113': aja2-evap
+'114': plasma-etch
+'115': micromist-coater
+'116': afm2
+'117': zygo
+'118': voltera
+'119': cvd-nanotube
+'12': demo tool
+'120': optomec
+'121': yes2
+'122': pv-tester
+'123': heidelberg3
+'124': heidelberg2
+'125': optomec-printer
+'126': alphastep
+'127': headway3
+'128': parcoater
+'129': afm-asylum-loaner
+'13': epi2
+'130': centrifuge
+'132': wbexfab_dev
+'133': lasercutter
+'134': afm-asylum
+'135': keyence
+'136': fumehood4
+'137': fumehood3
+'138': 155a venice
+'139': fumehood2
+'14': aw610_l
+'140': fumehood1
+'141': laserscribe
+'142': sinton-lifetime-tester
+'143': thermolyne
+'144': disco wafersaw
+'145': eddycurrent
+'146': lesker-sputter
+'148': 3d-wax-printer
+'149': lakeshore-hall
+'15': aw610_r
+'150': raith
+'151': biologic
+'152': hummer
+'153': malvern-dls
+'154': oriel-duv
+'155': jasco-uv-vis-nir
+'156': nanospec3
+'157': heidelberg
+'158': flipchipbonder
+'159': cmp
+'160': disperser
+'161': woollam
+'162': redfurnace
+'163': laurell_dev-etch
+'164': nanoinkjet
+'165': hotplate-1
+'166': trainee
+'167': alphastep2
+'168': heat-seal-press
+'169': sem-merlin
+'17': thermco3
+'170': thinky-mixer
+'171': lesker2-sputter
+'172': s-neox
+'173': spincoat-g3p8
+'174': alveole
+'175': aja-evap
+'176': afm-nsil
+'177': wbexfab_solv-plug
+'178': wbexfab_solv
+'179': cytoviva
+'18': thermco4
+'180': sonicator
+'181': micromanipulator6000
+'182': disco-backgrind
+'183': glovebox-r
+'184': glovebox-l
+'185': thermoscientific-oven
+'186': aixtron-graphene
+'187': micromill
+'188': wbexfab_dev-plug
+'189': ox-gen
+'19': tylan9
+'191': snf safety tour
+'192': wbgen2-hp
+'193': all litho training
+'194': b1t1 flexible oxide anneal
+'20': tylanfga
+'206': b1t2 flexible oxide
+'207': b2t5 clean anneal
+'208': b2t6 clean oxide
+'209': b3t9 clean oxide
+'210': b1t3 flexible poly
+'211': b1t4 flexible lto
+'212': b2t7 flexible nitride
+'213': b2t8 clean lto
+'214': b3t10 clean nitride
+'215': b3t11 clean teos
+'216': b3t12 clean poly
+'218': filmetrics2
+'219': cha-evap
+'220': edwards-sputter-evap
+'221': gs-test
+'222': probe station p200l
+'223': beckman centrifuge
+'224': ox-ale
+'225': ox-ox
+'226': ox-pecvd
+'227': afm nanocue
+'228': bruker cmp
+'229': aixccs bake
+'230': aml bonder
+'231': lpkf protolaser u4
+'232': keyence vhx-x1 (torramics)
+'233': keyence vk-x3000 (torramics)
+'234': signatone 4pp
+'24': thermcolto
+'25': thermcopoly2
+'27': ccp-dep
+'28': hdpcvd
+'29': seki-diamond
+'30': headway2
+'31': laurell-g
+'32': laurell-r
+'33': svgcoat
+'34': svgcoat2
+'35': svgcoat3
+'36': svgcoat4
+'37': evgspraycoat
+'38': asml
+'39': evalign
+'4': aix200
+'40': evalign2
+'41': karlsuss
+'42': karlsuss2
+'43': masksrub
+'44': svgdev
+'45': svgdev2
+'46': bluem
+'47': uvcure
+'48': white-oven
+'49': 'yes'
+'5': aixccs
+'50': fiji2
+'51': fiji3
+'52': mvd
+'54': intlvac_evap
+'55': gasonics
+'56': lampoly
+'57': matrix
+'58': mrc
+'59': oxford-rie
+'60': p5000etch
+'61': stsetch
+'62': uetch
+'63': xactix
+'64': ox-35
+'65': pt-ox
+'66': pt-mtl
+'67': pt-dse
+'68': samco
+'69': technics
+'7': ck-test
+'70': cpd
+'71': lithosolv
+'72': wbclean-1
+'73': wbclean-2
+'74': wbclean-3
+'75': wbclean_res-piranha
+'76': wbclean_res-hf
+'77': wbclean_res-hotphos
+'78': wbdecon
+'79': wbflexcorr-1
+'8': savannah
+'80': wbflexcorr-2
+'81': wbflexcorr-3
+'82': wbflexcorr-4
+'83': wbflexsolv
+'84': wbflexsolv-1
+'85': wbflexsolv-2
+'86': wbflexcorr-plug
+'87': wbflexcorr-plug2
+'88': wbflexsolv-plug
+'89': wbmiscres
+'9': fiji1
+'90': wbresstrip-1
+'91': wbresstrip-2
+'92': wbresstrip-3
+'93': wbresstrip-4
+'94': evbond
+'95': ksbonder
+'96': filmetrics
+'97': nanospec2
+'98': prometrix
+'99': p2

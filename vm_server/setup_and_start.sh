@@ -99,17 +99,24 @@ echo ""
 # STEP 0: VM SERVER IP DETECTION AND CONFIGURATION
 # =============================================================================
 
-print_header "Step 0: VM Server IP Detection and Configuration"
+print_header "Step 0: Configuration Validation"
 
-print_info "Detecting current IP address and updating VM server configuration..."
+print_info "Validating configuration files..."
 cd "$PROJECT_DIR"
 
-# Run dynamic IP setup for VM server only
-if python3 vm_server/dynamic_ip_setup.py; then
-    print_success "VM server IP configuration updated successfully"
-else
-    print_warning "VM server IP setup failed, continuing with existing configuration"
+# Check if config files exist
+if [ ! -f "vm_server/config.env" ]; then
+    print_warning "config.env not found, copying from example..."
+    cp vm_server/config.env.example vm_server/config.env
+    print_info "Please edit vm_server/config.env with your settings"
 fi
+
+if [ ! -f "vm_server/tool_mappings.yaml" ]; then
+    print_error "tool_mappings.yaml not found! Please create this file with your tool mappings."
+    exit 1
+fi
+
+print_success "Configuration files validated"
 
 # Return to script directory
 cd "$SCRIPT_DIR"
@@ -337,10 +344,37 @@ pip install -r requirements.txt
 print_success "Python dependencies ready"
 
 # =============================================================================
-# STEP 7: CONFIGURE SSL SETTINGS
+# STEP 6.5: GENERATE TOOL MAPPINGS FROM NEMO API
 # =============================================================================
 
-print_header "Step 7: Configuring SSL Settings"
+print_header "Step 6.5: Generating Tool Mappings from NEMO API"
+
+# Check if NEMO token is configured
+if [ -f "config.env" ]; then
+    if grep -q "NEMO_TOKEN=" config.env && ! grep -q "NEMO_TOKEN=your_nemo_token_here" config.env; then
+        print_info "NEMO token found, generating tool mappings from API..."
+        
+        # Generate tool mappings from NEMO API
+        if python generate_tool_mappings.py --api; then
+            print_success "Tool mappings generated successfully from NEMO API"
+        else
+            print_warning "Failed to generate tool mappings from API, using existing file"
+        fi
+    else
+        print_warning "NEMO token not configured, skipping API tool mapping generation"
+        print_info "To enable API tool mapping generation:"
+        print_info "  1. Edit config.env and set NEMO_TOKEN to your actual token"
+        print_info "  2. Run: python generate_tool_mappings.py --api"
+    fi
+else
+    print_warning "config.env not found, skipping API tool mapping generation"
+fi
+
+# =============================================================================
+# STEP 8: CONFIGURE SSL SETTINGS
+# =============================================================================
+
+print_header "Step 8: Configuring SSL Settings"
 
 echo "SSL/TLS provides encrypted communication between MQTT clients and the broker."
 echo "This is recommended for production environments but optional for development."
@@ -434,10 +468,10 @@ else
 fi
 
 # =============================================================================
-# STEP 8: SET UP ENVIRONMENT FILE
+# STEP 9: SET UP ENVIRONMENT FILE
 # =============================================================================
 
-print_header "Step 8: Setting Up Environment Configuration"
+print_header "Step 9: Setting Up Environment Configuration"
 
 if [ ! -f "$ENV_FILE" ]; then
     print_info "Creating environment configuration file..."
@@ -485,10 +519,10 @@ else
 fi
 
 # =============================================================================
-# STEP 9: UPDATE MOSQUITTO CONFIGURATION FOR SSL
+# STEP 10: UPDATE MOSQUITTO CONFIGURATION FOR SSL
 # =============================================================================
 
-print_header "Step 9: Updating Mosquitto Configuration for SSL"
+print_header "Step 10: Updating Mosquitto Configuration for SSL"
 
 # Add SSL configuration if enabled
 if [ "$MQTT_USE_SSL" = "true" ]; then
@@ -509,10 +543,10 @@ else
 fi
 
 # =============================================================================
-# STEP 10: START MQTT BROKER
+# STEP 11: START MQTT BROKER
 # =============================================================================
 
-print_header "Step 10: Starting MQTT Broker"
+print_header "Step 11: Starting MQTT Broker"
 
 print_info "Starting Mosquitto with new configuration..."
 mosquitto -c "$CONFIG_FILE" -d
@@ -529,10 +563,10 @@ else
 fi
 
 # =============================================================================
-# STEP 11: START NEMO SERVER
+# STEP 12: START NEMO SERVER
 # =============================================================================
 
-print_header "Step 11: Starting NEMO Server"
+print_header "Step 12: Starting NEMO Server"
 
 print_info "Activating virtual environment and starting NEMO server..."
 source venv/bin/activate
@@ -551,7 +585,7 @@ else
 fi
 
 # =============================================================================
-# STEP 12: SYSTEM READY
+# STEP 13: SYSTEM READY
 # =============================================================================
 
 print_header "🎉 NEMO Tool Display System Ready!"

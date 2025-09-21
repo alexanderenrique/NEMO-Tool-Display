@@ -1,20 +1,10 @@
 #!/bin/bash
 
-# Quick Restart - One-liner restart with VM server IP detection
-echo "🔄 Quick restarting services with VM server IP detection..."
+# Quick Restart - One-liner restart
+echo "🔄 Quick restarting services..."
 
 # Get the directory of this script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-
-# Run dynamic IP setup for VM server only
-echo "🔍 Detecting and updating VM server IP address..."
-cd "$PROJECT_DIR"
-python3 vm_server/dynamic_ip_setup.py
-
-if [ $? -ne 0 ]; then
-    echo "❌ VM server IP setup failed. Continuing with existing configuration..."
-fi
 
 # Kill everything
 echo "🛑 Stopping existing services..."
