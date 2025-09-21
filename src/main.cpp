@@ -19,7 +19,8 @@ const char* password = "100BoiledEggs";
 const char* mqtt_broker = "10.0.0.31";
 const int mqtt_port = 1883;
 const char* mqtt_client_id = "nemo_display_001";
-const char* mqtt_topic_status = "nemo/esp32/1/status";
+// MQTT topics - use tool name from config
+String mqtt_topic_status = "nemo/esp32/" + String(TARGET_TOOL_NAME) + "/status";
 const char* mqtt_topic_overall = "nemo/esp32/overall";
 
 // Display configuration (TFT 480x320)
@@ -42,6 +43,7 @@ lv_obj_t *status_label = nullptr;
 lv_obj_t *user_label = nullptr;
 lv_obj_t *time_label = nullptr;
 lv_obj_t *tool_status_label = nullptr;
+lv_obj_t *status_indicator = nullptr;
 
 // Tool name from config
 String toolDisplayName = "";
@@ -56,6 +58,7 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
 void create_simple_ui();
 String capitalizeToolName(const char* toolName);
 void updateConnectionStatus();
+void updateStatusIndicator(bool isEnabled);
 
 void setup() {
   Serial.begin(9600);
@@ -65,6 +68,11 @@ void setup() {
   toolDisplayName = capitalizeToolName(TARGET_TOOL_NAME);
   Serial.print("Tool Display Name: ");
   Serial.println(toolDisplayName);
+  
+  // Initialize MQTT topic with tool name
+  mqtt_topic_status = "nemo/esp32/" + String(TARGET_TOOL_NAME) + "/status";
+  Serial.print("MQTT Status Topic: ");
+  Serial.println(mqtt_topic_status);
   
   // Initialize TFT display
   tft.init();
@@ -189,6 +197,13 @@ void create_simple_ui() {
   const uint32_t backgroundColor = 0xFFFFFF;  // White background
   const uint32_t textColor = 0x000000;        // Black text
   
+  // Font size configuration variables
+  const lv_font_t* titleFont = &lv_font_montserrat_36;
+  const lv_font_t* statusFont = &lv_font_montserrat_14;
+  const lv_font_t* userFont = &lv_font_montserrat_22;
+  const lv_font_t* timeFont = &lv_font_montserrat_22;
+  const lv_font_t* toolStatusFont = &lv_font_montserrat_14;
+  
   // Create main container - use full screen
   lv_obj_t *cont = lv_obj_create(lv_scr_act());
   lv_obj_set_size(cont, 480, 320);  // Full screen size
@@ -197,40 +212,48 @@ void create_simple_ui() {
   lv_obj_set_style_border_width(cont, 0, 0);  // No border
   lv_obj_set_style_radius(cont, 0, 0);        // No rounded corners
   
-  // Title label - use dynamic tool name
+  // Create status indicator block (180px wide, full height on left side)
+  status_indicator = lv_obj_create(cont);
+  lv_obj_set_size(status_indicator, 180, 320);  // 180px wide, full height
+  lv_obj_set_pos(status_indicator, 0, 0);       // Position at left edge
+  lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFF0000), 0); // Start with red (disabled)
+  lv_obj_set_style_border_width(status_indicator, 0, 0);  // No border
+  lv_obj_set_style_radius(status_indicator, 0, 0);        // No rounded corners
+  
+  // Title label - use dynamic tool name (positioned on right side)
   title_label = lv_label_create(cont);
   lv_label_set_text(title_label, toolDisplayName.c_str());
-  lv_obj_set_style_text_font(title_label, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_font(title_label, titleFont, 0);
   lv_obj_set_style_text_color(title_label, lv_color_hex(textColor), 0);
-  lv_obj_align(title_label, LV_ALIGN_TOP_MID, 0, 20);
+  lv_obj_align(title_label, LV_ALIGN_TOP_MID, 90, 20); // Offset by 90px to center in right area
   
-  // Status label - consolidated WiFi and MQTT status
+  // Status label - consolidated WiFi and MQTT status (positioned at bottom)
   status_label = lv_label_create(cont);
   lv_label_set_text(status_label, "Initializing...");
-  lv_obj_set_style_text_font(status_label, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_text_font(status_label, statusFont, 0);
   lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
-  lv_obj_align(status_label, LV_ALIGN_CENTER, 0, -20);
+  lv_obj_align(status_label, LV_ALIGN_BOTTOM_MID, 90, -20); // Bottom of screen, offset by 90px to center in right area
   
-  // User name label
+  // User name label (positioned on right side)
   user_label = lv_label_create(cont);
   lv_label_set_text(user_label, "User: --");
-  lv_obj_set_style_text_font(user_label, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_text_font(user_label, userFont, 0);
   lv_obj_set_style_text_color(user_label, lv_color_hex(textColor), 0);
-  lv_obj_align(user_label, LV_ALIGN_CENTER, 0, 20);
+  lv_obj_align(user_label, LV_ALIGN_CENTER, 90, -40); // Offset by 90px to center in right area, moved up
   
-  // Time label
+  // Time label (positioned on right side)
   time_label = lv_label_create(cont);
   lv_label_set_text(time_label, "Time: --:--");
-  lv_obj_set_style_text_font(time_label, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_font(time_label, timeFont, 0);
   lv_obj_set_style_text_color(time_label, lv_color_hex(textColor), 0);
-  lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 50);
+  lv_obj_align(time_label, LV_ALIGN_CENTER, 90, -10); // Offset by 90px to center in right area, moved up
   
-  // Tool status label
+  // Tool status label (positioned on right side)
   tool_status_label = lv_label_create(cont);
   lv_label_set_text(tool_status_label, "Status: Offline");
-  lv_obj_set_style_text_font(tool_status_label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(tool_status_label, toolStatusFont, 0);
   lv_obj_set_style_text_color(tool_status_label, lv_color_hex(textColor), 0);
-  lv_obj_align(tool_status_label, LV_ALIGN_CENTER, 0, 80);
+  lv_obj_align(tool_status_label, LV_ALIGN_CENTER, 90, 20); // Offset by 90px to center in right area, moved up
   
   Serial.println("Simple LVGL UI created successfully!");
 }
@@ -263,7 +286,7 @@ void connectMQTT() {
       Serial.println(mqtt_port);
       
       // Subscribe to topics
-      bool sub1 = mqttClient.subscribe(mqtt_topic_status);
+      bool sub1 = mqttClient.subscribe(mqtt_topic_status.c_str());
       bool sub2 = mqttClient.subscribe(mqtt_topic_overall);
       
       Serial.print("Subscribe to status: ");
@@ -272,7 +295,7 @@ void connectMQTT() {
       Serial.println(sub2 ? "SUCCESS" : "FAILED");
       
       Serial.print("Subscribed to: ");
-      Serial.println(mqtt_topic_status);
+      Serial.println(mqtt_topic_status.c_str());
       Serial.print("Subscribed to: ");
       Serial.println(mqtt_topic_overall);
       
@@ -315,6 +338,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print(" bytes) ");
   Serial.println(message);
   
+  // Debug: Show message size
+  Serial.print("ESP32 received message size: ");
+  Serial.print(length);
+  Serial.println(" bytes");
+  
   processMQTTMessage(topic, message);
 }
 
@@ -331,12 +359,13 @@ void processMQTTMessage(const char* topic, const char* payload) {
   }
   
   // Handle tool status messages (simplified format)
-  if (strcmp(topic, mqtt_topic_status) == 0) {
+  if (strcmp(topic, mqtt_topic_status.c_str()) == 0) {
     Serial.println("Processing tool status message...");
     
-    // Extract user name and label
+    // Extract user name, last name, and label
     if (doc["user_name"].is<const char*>()) {
       const char* userName = doc["user_name"];
+      const char* userLastName = doc["last_name"].as<const char*>();
       const char* userLabel = doc["user_label"].as<const char*>();
       
       if (user_label) {
@@ -348,6 +377,12 @@ void processMQTTMessage(const char* topic, const char* payload) {
           userText += "User: ";
         }
         userText += userName;
+        
+        // Add last name if available
+        if (userLastName && strlen(userLastName) > 0) {
+          userText += " ";
+          userText += userLastName;
+        }
         
         lv_label_set_text(user_label, userText.c_str());
         lv_obj_set_style_text_color(user_label, lv_color_hex(0x000000), 0);
@@ -378,11 +413,6 @@ void processMQTTMessage(const char* topic, const char* payload) {
         String statusText = "Status: ";
         statusText += eventType;
         
-        // Add in_use indicator
-        if (inUse) {
-          statusText += " (In Use)";
-        }
-        
         lv_label_set_text(tool_status_label, statusText.c_str());
         
         // Debug output
@@ -406,6 +436,11 @@ void processMQTTMessage(const char* topic, const char* payload) {
           lv_obj_set_style_text_color(tool_status_label, lv_color_hex(0xFF8800), 0); // Orange for unknown
         }
       }
+      
+      // Update status indicator based on tool state
+      // Consider "enabled" and "idle" as enabled states, "disabled" as disabled
+      bool isToolEnabled = (strcmp(eventType, "enabled") == 0 || strcmp(eventType, "idle") == 0);
+      updateStatusIndicator(isToolEnabled);
     }
   }
   
@@ -475,4 +510,19 @@ void updateConnectionStatus() {
   
   Serial.print("Updated status: ");
   Serial.println(statusText.c_str());
+}
+
+// Update status indicator color based on tool state
+void updateStatusIndicator(bool isEnabled) {
+  if (!status_indicator) return;
+  
+  if (isEnabled) {
+    // Green for enabled
+    lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0x00FF00), 0);
+    Serial.println("Status indicator: GREEN (enabled)");
+  } else {
+    // Red for disabled
+    lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFF0000), 0);
+    Serial.println("Status indicator: RED (disabled)");
+  }
 }

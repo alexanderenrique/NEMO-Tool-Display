@@ -1,0 +1,27 @@
+# NEMO Tool Display - Tool ID to Name Mappings
+# This file maps tool IDs from NEMO backend to tool names for ESP32 displays
+# 
+# Format: tool_id: tool_name
+# - tool_id: The numeric ID assigned by NEMO backend (string format)
+# - tool_name: The human-readable tool name used in MQTT topics
+#
+# Usage:
+# 1. Update this file with your actual tool mappings
+# 2. Restart the broker to load new mappings
+# 3. ESP32 displays will automatically receive messages on the correct topics
+#
+# Example for production with 300+ tools:
+# 1: woollam
+# 2: fiji2
+# 3: savannah
+# 4: electron_microscope_1
+# 5: electron_microscope_2
+# 6: xray_diffractometer
+# 7: atomic_force_microscope
+# 8: scanning_tunneling_microscope
+# ... (continue for all 300+ tools)
+
+# Current development mappings
+1: woollam
+2: fiji2
+3: savannah
