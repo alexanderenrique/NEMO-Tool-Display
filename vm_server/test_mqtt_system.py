@@ -83,7 +83,9 @@ class MQTTTester:
             "user": {
                 "name": "Test User",
                 "username": "testuser",
-                "id": "12345"
+                "id": "12345",
+                "first_name": "John",
+                "last_name": "Doe"
             },
             "usage": {
                 "start_time": time.strftime("%Y-%m-%dT%H:%M:%S"),

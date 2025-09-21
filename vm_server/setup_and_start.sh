@@ -81,13 +81,38 @@ trap cleanup SIGINT SIGTERM
 # Change to script directory
 cd "$SCRIPT_DIR"
 
+# Get the project root directory
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
 print_header "NEMO Tool Display - Master Setup and Start"
 echo "This script will configure and start the complete NEMO system:"
+echo "  - Detect and configure VM server IP address"
 echo "  - Install and configure Mosquitto MQTT broker"
 echo "  - Set up Python dependencies"
 echo "  - Start MQTT broker"
 echo "  - Start NEMO server"
 echo ""
+echo "Note: ESP32 broker IP is configured manually in platformio.ini"
+echo ""
+
+# =============================================================================
+# STEP 0: VM SERVER IP DETECTION AND CONFIGURATION
+# =============================================================================
+
+print_header "Step 0: VM Server IP Detection and Configuration"
+
+print_info "Detecting current IP address and updating VM server configuration..."
+cd "$PROJECT_DIR"
+
+# Run dynamic IP setup for VM server only
+if python3 vm_server/dynamic_ip_setup.py; then
+    print_success "VM server IP configuration updated successfully"
+else
+    print_warning "VM server IP setup failed, continuing with existing configuration"
+fi
+
+# Return to script directory
+cd "$SCRIPT_DIR"
 
 # =============================================================================
 # STEP 1: INSTALL MOSQUITTO
@@ -345,8 +370,16 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Generate server private key
         openssl genrsa -out "$MQTT_CERT_DIR/server.key" 2048
         
-        # Get the broker IP address for certificate
-        BROKER_IP=$(ifconfig | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -1 2>/dev/null || echo 'localhost')
+        # Get the broker IP address for certificate (use dynamic detection)
+        BROKER_IP=$(python3 -c "
+import socket
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(('8.8.8.8', 80))
+        print(s.getsockname()[0])
+except:
+    print('localhost')
+" 2>/dev/null || echo 'localhost')
         
         # Create a config file for the certificate with SAN
         cat > "$MQTT_CERT_DIR/server.conf" << EOF
@@ -552,8 +585,16 @@ echo -e "${PURPLE}┌───────────────────�
 echo -e "${PURPLE}│${NC} ${CYAN}NEMO Setup Information${NC} ${PURPLE}│${NC}"
 echo -e "${PURPLE}├─────────────────────────────────────────────────────────────┤${NC}"
 
-# Get the broker IP address
-BROKER_IP=$(ifconfig | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | head -1 2>/dev/null || echo 'localhost')
+# Get the broker IP address (use dynamic detection)
+BROKER_IP=$(python3 -c "
+import socket
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect(('8.8.8.8', 80))
+        print(s.getsockname()[0])
+except:
+    print('localhost')
+" 2>/dev/null || echo 'localhost')
 echo -e "${PURPLE}│${NC} ${YELLOW}MQTT Broker IP:${NC} ${GREEN}$BROKER_IP${NC} ${PURPLE}│${NC}"
 echo -e "${PURPLE}│${NC} ${YELLOW}MQTT Port:${NC} ${GREEN}$MQTT_PORT${NC} ${PURPLE}│${NC}"
 

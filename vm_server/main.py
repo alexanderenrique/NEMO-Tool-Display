@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import socket
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -31,15 +32,42 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def get_local_ip():
+    """Get the local IP address dynamically"""
+    try:
+        # Connect to a remote address to determine local IP
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+        return local_ip
+    except Exception:
+        try:
+            # Fallback: use hostname resolution
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            if local_ip.startswith("127."):
+                raise Exception("Got loopback address")
+            return local_ip
+        except Exception:
+            return "127.0.0.1"
+
+
 class NEMOToolServer:
     """Main server class for NEMO Tool Display system"""
     
     def __init__(self):
-        self.mqtt_broker = os.getenv('MQTT_BROKER', '192.168.1.100')
-        self.mqtt_port = int(os.getenv('MQTT_PORT', '8883'))
+        # Auto-detect IP address if not set in environment
+        detected_ip = get_local_ip()
+        self.mqtt_broker = os.getenv('MQTT_BROKER', detected_ip)
+        self.mqtt_port = int(os.getenv('MQTT_PORT', '1883'))  # Use non-SSL for local development
         self.mqtt_username = os.getenv('MQTT_USERNAME', '')
         self.mqtt_password = os.getenv('MQTT_PASSWORD', '')
-        self.mqtt_use_ssl = os.getenv('MQTT_USE_SSL', 'true').lower() == 'true'
+        self.mqtt_use_ssl = os.getenv('MQTT_USE_SSL', 'false').lower() == 'true'  # Default to false for local
+        
+        # Log the detected IP
+        logger.info(f"Using MQTT broker: {self.mqtt_broker}:{self.mqtt_port}")
+        if self.mqtt_broker == detected_ip:
+            logger.info(f"Auto-detected IP address: {detected_ip}")
         
         # ESP32 Display Configuration
         esp32_tools_str = os.getenv('ESP32_DISPLAY_TOOLS', '')
@@ -193,6 +221,7 @@ class NEMOToolServer:
             
             # Handle user tracking and label switching
             current_user = user_info.get('first_name', '')
+            current_last_name = user_info.get('last_name', '')
             user_label = "User"
             user_display_name = current_user
             
@@ -220,6 +249,8 @@ class NEMOToolServer:
                 "operational": tool_info.get('operational', False),
                 "user_label": user_label,
                 "user_name": user_display_name,
+                "first_name": current_user,
+                "last_name": current_last_name,
                 "interlock_enabled": interlock_info.get('enabled', False)
             }
             
