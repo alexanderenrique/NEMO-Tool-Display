@@ -568,9 +568,8 @@ fi
 
 print_header "Step 12: Starting NEMO Server"
 
-print_info "Activating virtual environment and starting NEMO server..."
-source venv/bin/activate
-python main.py &
+print_info "Starting NEMO server with process management..."
+./check_and_start.sh &
 SERVER_PID=$!
 
 # Wait a moment for the server to start
