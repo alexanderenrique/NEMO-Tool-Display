@@ -7,7 +7,7 @@ IoT system with ESP32 displays that show real-time tool status from the NEMO bac
 ### 1. VM Server Setup
 ```bash
 cd vm_server
-./setup_and_start.sh
+./setup.sh
 ```
 
 The setup script will:
@@ -226,6 +226,7 @@ The `tool_mappings.yaml` file maps NEMO tool IDs to display names:
 **NEMO server issues:**
 - Check Python dependencies: `pip install -r requirements.txt`
 - Verify configuration in `config.env`
+- Run comprehensive tests: `python3 test_system.py`
 - Test MQTT: `mosquitto_sub -h localhost -t "nemo/#" -v`
 
 ### Network Issues
@@ -237,9 +238,23 @@ The `tool_mappings.yaml` file maps NEMO tool IDs to display names:
 
 ## Monitoring and Debugging
 
-### Quick Restart Script
-The `vm_server/quick_restart.sh` script provides a fast way to restart services:
+### Available Scripts
 
+#### Setup Script (`setup.sh`)
+Complete system setup and configuration:
+```bash
+cd vm_server
+./setup.sh
+```
+
+**What it does:**
+- Installs Mosquitto MQTT broker
+- Sets up Python virtual environment
+- Creates MQTT configuration
+- Starts all services
+
+#### Quick Restart Script (`quick_restart.sh`)
+Fast restart for development:
 ```bash
 cd vm_server
 ./quick_restart.sh
@@ -250,6 +265,33 @@ cd vm_server
 2. Clears MQTT ports (1883, 1886, 8883, 9001)
 3. Starts Mosquitto MQTT broker on both ports
 4. Starts the NEMO server (vm_server/main.py)
+
+#### Test Script (`test_system.py`)
+Comprehensive system testing:
+```bash
+cd vm_server
+python3 test_system.py
+```
+
+**What it tests:**
+- System processes (MQTT broker, NEMO server)
+- Port connectivity (1883, 1886, 9001)
+- Message parsing and trimming logic
+- MQTT connections (NEMO and ESP32)
+- End-to-end functionality
+
+#### MQTT Monitor (`mqtt_monitor.py`)
+Real-time MQTT traffic monitoring:
+```bash
+cd vm_server
+python3 mqtt_monitor.py
+```
+
+**Features:**
+- Monitors all MQTT ports (1883, 1886, 8883)
+- Shows message direction and content
+- Displays connection status
+- Real-time traffic analysis
 
 **⚠️ Important - Internal Development Setup:**
 When running the actual NEMO application and this display system on the same machine, restarting Mosquitto will temporarily break NEMO's MQTT connection:
@@ -295,7 +337,11 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 ```
 ├── vm_server/                    # Python server and configuration
 │   ├── main.py                  # Main NEMO server application
-│   ├── setup_and_start.sh      # Master setup and start script
+│   ├── setup.sh                 # Complete system setup script
+│   ├── quick_restart.sh         # Fast restart for development
+│   ├── test_system.py           # Comprehensive system tests
+│   ├── mqtt_monitor.py          # MQTT traffic monitor
+│   ├── config_parser.py         # Centralized config parser
 │   ├── generate_tool_mappings.py # Tool mapping generator
 │   ├── config.env              # Server configuration
 │   ├── tool_mappings.yaml      # Tool ID to name mappings
