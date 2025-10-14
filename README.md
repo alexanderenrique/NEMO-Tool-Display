@@ -23,10 +23,10 @@ Edit `platformio.ini` with your network and MQTT settings:
 build_flags = 
     -DWIFI_SSID="your_wifi"
     -DWIFI_PASSWORD="your_password"
-    -DMQTT_BROKER="192.168.1.100"  # Your VM server's IP
-    -DMQTT_PORT=1883               # MQTT port (1883 or 8883 for SSL)
-    -DMQTT_USE_SSL=false           # Set to true if using SSL
-    -DTARGET_TOOL_NAME="woollam"   # Tool name for this display
+    -DMQTT_BROKER="192.168.1.100"    # Your VM server's IP
+    -DMQTT_PORT_ESP32=1883            # ESP32 MQTT port
+    -DMQTT_USE_SSL=false              # Set to true if using SSL
+    -DTARGET_TOOL_NAME="woollam"      # Tool name for this display
 ```
 
 ### 3. Upload Firmware
@@ -50,11 +50,18 @@ GND        →  GND
 
 ## Configuration
 
+The system uses **centralized configuration** to ensure consistency between ESP32 and VM server:
+
+### Centralized Configuration System
+- **`include/config.h`** - Master configuration with fallback defaults
+- **`platformio.ini`** - ESP32 build-time configuration (overrides config.h)
+- **`vm_server/config_parser.py`** - Python parser that reads from config.h
+
 ### VM Server (config.env)
 ```env
 # MQTT Configuration
 MQTT_BROKER=10.0.0.31
-MQTT_PORT=1883
+MQTT_PORT=1886                    # NEMO backend port (VM server only)
 MQTT_USE_SSL=false
 MQTT_USERNAME=
 MQTT_PASSWORD=
@@ -77,10 +84,15 @@ build_flags =
     -DWIFI_SSID="your_wifi"
     -DWIFI_PASSWORD="your_password"
     -DMQTT_BROKER="192.168.1.100"    # VM server IP
-    -DMQTT_PORT=1883                 # MQTT port
-    -DMQTT_USE_SSL=false             # SSL enabled/disabled
-    -DTARGET_TOOL_NAME="woollam"     # Tool name for this display
+    -DMQTT_PORT_ESP32=1883            # ESP32 MQTT port
+    -DMQTT_USE_SSL=false              # SSL enabled/disabled
+    -DTARGET_TOOL_NAME="woollam"      # Tool name for this display
 ```
+
+### Port Configuration
+- **ESP32 Port (1883)**: Used by ESP32 displays to receive status updates
+- **NEMO Port (1886)**: Used by VM server to receive messages from NEMO backend
+- **Configuration**: ESP32 port defined in `platformio.ini`, NEMO port defined in `config.env`
 
 ## Tool Mapping System
 
@@ -191,7 +203,7 @@ The `tool_mappings.yaml` file maps NEMO tool IDs to display names:
 
 **Can't connect to MQTT:**
 - Verify MQTT broker IP address in `platformio.ini`
-- Check MQTT port (1883 for non-SSL, 8883 for SSL)
+- Check MQTT port (1883 for ESP32, 1886 for NEMO backend)
 - Ensure ESP32 and server are on same network
 - Check SSL settings match between ESP32 and server
 
@@ -203,7 +215,7 @@ The `tool_mappings.yaml` file maps NEMO tool IDs to display names:
 ### VM Server Issues
 **MQTT broker won't start:**
 - Check logs: `tail -f vm_server/mqtt/log/mosquitto.log`
-- Verify port 1883/8883 is not in use
+- Verify ports 1883 and 1886 are not in use
 - Check Mosquitto configuration: `mosquitto -c mqtt/config/mosquitto.conf -v`
 
 **Tool mappings not updating:**
@@ -225,6 +237,29 @@ The `tool_mappings.yaml` file maps NEMO tool IDs to display names:
 
 ## Monitoring and Debugging
 
+### Quick Restart Script
+The `vm_server/quick_restart.sh` script provides a fast way to restart services:
+
+```bash
+cd vm_server
+./quick_restart.sh
+```
+
+**What it does:**
+1. Stops all existing MQTT broker and server processes
+2. Clears MQTT ports (1883, 1886, 8883, 9001)
+3. Starts Mosquitto MQTT broker on both ports
+4. Starts the NEMO server (vm_server/main.py)
+
+**⚠️ Important - Internal Development Setup:**
+When running the actual NEMO application and this display system on the same machine, restarting Mosquitto will temporarily break NEMO's MQTT connection:
+
+1. **During restart:** NEMO's connection to Mosquitto is severed
+2. **Message impact:** Messages published during the restart may be lost or queued
+3. **Reconnection:** NEMO's MQTT plugin typically auto-reconnects once Mosquitto is back up
+
+**Best Practice:** Avoid restarting Mosquitto during active tool usage. For production deployments, run the MQTT broker on a separate machine to prevent this issue.
+
 ### MQTT Monitoring
 ```bash
 # Monitor all NEMO topics
@@ -235,6 +270,10 @@ mosquitto_sub -h localhost -t "nemo/esp32/woollam/status" -v
 
 # Monitor server status
 mosquitto_sub -h localhost -t "nemo/server/status" -v
+
+# Use the comprehensive monitor script
+cd vm_server
+python3 mqtt_monitor.py
 ```
 
 ### Log Files

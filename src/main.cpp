@@ -11,17 +11,17 @@
 #include <ArduinoJson.h>
 #include "config.h"
 
-// WiFi credentials
-const char* ssid = "Zucotti Manicotti";
-const char* password = "100BoiledEggs";
+// WiFi credentials - now from build flags
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
 
-// MQTT Configuration
-const char* mqtt_broker = "10.0.0.31";
-const int mqtt_port = 1883;
-const char* mqtt_client_id = "nemo_display_001";
-// MQTT topics - use tool name from config
-String mqtt_topic_status = "nemo/esp32/" + String(TARGET_TOOL_NAME) + "/status";
-const char* mqtt_topic_overall = "nemo/esp32/overall";
+// MQTT Configuration - now from build flags
+const char* mqtt_broker = MQTT_BROKER;
+const int mqtt_port = MQTT_PORT_ESP32;
+const char* mqtt_client_id = MQTT_CLIENT_ID;
+// MQTT topics - use tool name and prefix from build flags
+String mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_NAME) + "/status";
+String mqtt_topic_overall = String(MQTT_TOPIC_PREFIX) + "/overall";
 
 // Display configuration (TFT 480x320)
 TFT_eSPI tft = TFT_eSPI();
@@ -70,26 +70,26 @@ void setup() {
   Serial.print("Tool Display Name: ");
   Serial.println(toolDisplayName);
   
-  // Initialize MQTT topic with tool name
-  mqtt_topic_status = "nemo/esp32/" + String(TARGET_TOOL_NAME) + "/status";
+  // Initialize MQTT topic with tool name and prefix from build flags
+  mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_NAME) + "/status";
   Serial.print("MQTT Status Topic: ");
   Serial.println(mqtt_topic_status);
   
   // Initialize TFT display
   tft.init();
-  tft.setRotation(1); // Use working rotation from lvgl_test
+  tft.setRotation(DISPLAY_ROTATION); // Use rotation from build flags
   tft.fillScreen(TFT_WHITE);
   
   // Initialize LVGL
   lv_init();
   
   // Initialize display buffer
-  lv_disp_draw_buf_init(&draw_buf, buf, NULL, 480 * 10);
+  lv_disp_draw_buf_init(&draw_buf, buf, NULL, DISPLAY_WIDTH * 10);
   
   // Initialize display driver
   lv_disp_drv_init(&disp_drv);
-  disp_drv.hor_res = 480;
-  disp_drv.ver_res = 320;
+  disp_drv.hor_res = DISPLAY_WIDTH;
+  disp_drv.ver_res = DISPLAY_HEIGHT;
   disp_drv.flush_cb = my_disp_flush;
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
@@ -122,7 +122,7 @@ void loop() {
   
   // Periodic status check (every 10 seconds)
   static unsigned long lastStatusCheck = 0;
-  if (millis() - lastStatusCheck > 10000) {
+  if (millis() - lastStatusCheck > DISPLAY_UPDATE_INTERVAL * 10) {
     lastStatusCheck = millis();
     Serial.print("MQTT Status: ");
     Serial.println(mqttClient.connected() ? "CONNECTED" : "DISCONNECTED");
@@ -145,7 +145,8 @@ void setupWiFi() {
   WiFi.begin(ssid, password);
   
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  int maxAttempts = WIFI_CONNECT_TIMEOUT / 500; // Convert timeout to attempts
+  while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
     delay(500);
     Serial.print(".");
     attempts++;
@@ -301,7 +302,7 @@ void connectMQTT() {
       
       // Subscribe to topics
       bool sub1 = mqttClient.subscribe(mqtt_topic_status.c_str());
-      bool sub2 = mqttClient.subscribe(mqtt_topic_overall);
+      bool sub2 = mqttClient.subscribe(mqtt_topic_overall.c_str());
       
       Serial.print("Subscribe to status: ");
       Serial.println(sub1 ? "SUCCESS" : "FAILED");
@@ -323,7 +324,7 @@ void connectMQTT() {
       // Update status
       updateConnectionStatus();
       
-      delay(5000);
+      delay(MQTT_RECONNECT_INTERVAL);
     }
   }
 }
@@ -363,7 +364,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 // Process MQTT Message
 void processMQTTMessage(const char* topic, const char* payload) {
   // Parse JSON with optimized buffer size
-  StaticJsonDocument<512> doc; // Optimized size for lightweight messages
+  JsonDocument doc; // Use modern JsonDocument instead of StaticJsonDocument
   DeserializationError error = deserializeJson(doc, payload);
   
   if (error) {
@@ -415,7 +416,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
       // Update time label based on tool status
       if (time_label) {
         String timeLabelText = "";
-        if (strcmp(eventType, "enabled") == 0 || strcmp(eventType, "idle") == 0) {
+        if (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_IDLE) == 0) {
           timeLabelText = "Enabled Since";
         } else if (strcmp(eventType, "disabled") == 0) {
           timeLabelText = "Disabled Since";
@@ -430,7 +431,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
       // Update user label based on tool status
       if (user_label) {
         String userLabelText = "";
-        if (strcmp(eventType, "enabled") == 0 || strcmp(eventType, "idle") == 0) {
+        if (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_IDLE) == 0) {
           userLabelText = "User";
         } else if (strcmp(eventType, "disabled") == 0) {
           userLabelText = "Last User";
@@ -443,14 +444,14 @@ void processMQTTMessage(const char* topic, const char* payload) {
       }
       
       // Update status indicator based on tool state
-      // Consider "enabled" and "idle" as enabled states, "disabled" as disabled
-      bool isToolEnabled = (strcmp(eventType, "enabled") == 0 || strcmp(eventType, "idle") == 0);
+      // Consider "active" and "idle" as enabled states, "disabled" as disabled
+      bool isToolEnabled = (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_IDLE) == 0);
       updateStatusIndicator(isToolEnabled);
     }
   }
   
   // Handle overall status messages
-  if (strcmp(topic, mqtt_topic_overall) == 0) {
+  if (strcmp(topic, mqtt_topic_overall.c_str()) == 0) {
     Serial.println("Received overall status update");
     // Could process overall system status here if needed
   }
