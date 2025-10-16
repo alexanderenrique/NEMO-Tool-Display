@@ -113,6 +113,17 @@ show_status() {
             print_error "Port $port: Not listening"
         fi
     done
+    
+    # Check SSL port if certificates exist
+    if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
+        if lsof -i :8883 >/dev/null 2>&1; then
+            print_success "Port 8883 (SSL): Listening"
+        else
+            print_error "Port 8883 (SSL): Not listening"
+        fi
+    else
+        print_info "Port 8883 (SSL): No certificates found"
+    fi
 }
 
 # Main execution

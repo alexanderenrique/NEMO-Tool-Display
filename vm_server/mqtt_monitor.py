@@ -65,7 +65,8 @@ class ComprehensiveMQTTMonitor:
         """Connection callback for port 8883 (NEMO SSL)"""
         if rc == 0:
             print(f"✅ Connected to port 8883 (NEMO SSL)")
-            client.subscribe("#")  # Subscribe to all topics
+            result = client.subscribe("#", qos=1)  # Subscribe to all topics with QoS 1
+            print(f"   📡 Subscribed to all topics on port 8883 (result: {result})")
         else:
             print(f"❌ Failed to connect to port 8883: {rc}")
     
@@ -78,8 +79,8 @@ class ComprehensiveMQTTMonitor:
         self.log_message("NEMO", msg, str(self.mqtt_port))
     
     def on_message_8883(self, client, userdata, msg):
-        """Message callback for port 8883"""
-        self.log_message("NEMO", msg, "8883")
+        """Message callback for port 8883 (SSL)"""
+        self.log_message("NEMO-SSL", msg, "8883")
     
     def log_message(self, source, msg, port):
         """Log and analyze incoming messages"""
@@ -155,7 +156,13 @@ class ComprehensiveMQTTMonitor:
         
         # Check port status
         print("\n🔌 PORT STATUS:")
-        for port, name in [(str(self.mqtt_port), "NEMO Dev")]:
+        ports_to_check = [
+            ("1883", "ESP32s"),
+            (str(self.mqtt_port), "NEMO Dev"),
+            ("8883", "NEMO SSL")
+        ]
+        
+        for port, name in ports_to_check:
             try:
                 result = os.popen(f"lsof -i :{port}").read().strip()
                 if result:
@@ -171,6 +178,7 @@ class ComprehensiveMQTTMonitor:
         print(f"  Total Messages: {self.message_count}")
         print(f"  Port 1883 (ESP32s): {self.port_stats['1883']}")
         print(f"  Port {self.mqtt_port} (NEMO Dev): {self.port_stats[str(self.mqtt_port)]}")
+        print(f"  Port 8883 (NEMO SSL): {self.port_stats['8883']}")
         
         if self.topic_stats:
             print(f"\n📈 TOP TOPICS:")
@@ -227,10 +235,18 @@ class ComprehensiveMQTTMonitor:
             print(f"Connecting to {self.mqtt_broker}:{self.mqtt_port} (NEMO)...")
             client_1884.connect(self.mqtt_broker, self.mqtt_port, 60)
             
-            # Skip port 8883 for focused testing
-            client_8883 = None
+            # Configure SSL for port 8883 if certificates exist
+            if os.path.exists("mqtt/certs/ca.crt"):
+                import ssl
+                client_8883.tls_set(ca_certs="mqtt/certs/ca.crt", certfile=None, keyfile=None, 
+                                   cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLS, 
+                                   ciphers=None)
+                print("🔒 SSL configured for port 8883")
+            else:
+                print("⚠️  No SSL certificates found, skipping port 8883")
+                client_8883 = None
             
-            # Start loops for both ports
+            # Start loops for all ports
             thread_1883 = threading.Thread(target=client_1883.loop_forever)
             thread_1883.daemon = True
             thread_1883.start()
@@ -239,9 +255,20 @@ class ComprehensiveMQTTMonitor:
             thread_1884.daemon = True
             thread_1884.start()
             
-            print(f"\n✅ Monitoring BOTH ports:")
+            # Start SSL thread if client exists
+            if client_8883:
+                print(f"Connecting to {self.mqtt_broker}:8883 (NEMO SSL)...")
+                client_8883.connect(self.mqtt_broker, 8883, 60)
+                
+                thread_8883 = threading.Thread(target=client_8883.loop_forever)
+                thread_8883.daemon = True
+                thread_8883.start()
+            
+            print(f"\n✅ Monitoring ports:")
             print(f"   📥 Port {self.mqtt_port} - Receiving from NEMO")
             print(f"   📤 Port 1883 - Publishing to ESP32s")
+            if client_8883:
+                print(f"   🔒 Port 8883 - NEMO SSL (secure)")
             print("=" * 80)
             
             # Main monitoring loop
@@ -270,6 +297,8 @@ class ComprehensiveMQTTMonitor:
                 client_1883.disconnect()
             if client_1884:
                 client_1884.disconnect()
+            if client_8883:
+                client_8883.disconnect()
     
     def print_final_stats(self):
         """Print final statistics"""
@@ -279,6 +308,7 @@ class ComprehensiveMQTTMonitor:
         print(f"Total Messages Monitored: {self.message_count}")
         print(f"Port 1883 (ESP32s): {self.port_stats['1883']}")
         print(f"Port {self.mqtt_port} (NEMO Dev): {self.port_stats[str(self.mqtt_port)]}")
+        print(f"Port 8883 (NEMO SSL): {self.port_stats['8883']}")
         print(f"Runtime: {datetime.now() - self.start_time}")
         
         if self.topic_stats:
