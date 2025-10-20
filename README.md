@@ -21,13 +21,15 @@ The setup script will:
 Edit `platformio.ini` with your network and MQTT settings:
 ```ini
 build_flags = 
-    -DWIFI_SSID="your_wifi"
-    -DWIFI_PASSWORD="your_password"
-    -DMQTT_BROKER="192.168.1.100"    # Your VM server's IP
+    -DWIFI_SSID="your_wifi_ssid"      # Replace with your WiFi SSID
+    -DWIFI_PASSWORD="your_wifi_password"  # Replace with your WiFi password
+    -DMQTT_BROKER="your_mqtt_broker_ip"  # Replace with your VM server's IP
     -DMQTT_PORT_ESP32=1883            # ESP32 MQTT port
     -DMQTT_USE_SSL=false              # Set to true if using SSL
     -DTARGET_TOOL_NAME="woollam"      # Tool name for this display
 ```
+
+**⚠️ SECURITY WARNING:** Never commit real WiFi credentials or IP addresses to version control!
 
 ### 3. Upload Firmware
 ```bash
@@ -60,7 +62,7 @@ The system uses **centralized configuration** to ensure consistency between ESP3
 ### VM Server (config.env)
 ```env
 # MQTT Configuration
-MQTT_BROKER=10.0.0.31
+MQTT_BROKER=your_mqtt_broker_ip   # Replace with your VM server's IP
 MQTT_PORT=1886                    # NEMO backend port (VM server only)
 MQTT_USE_SSL=false
 MQTT_USERNAME=
@@ -73,17 +75,17 @@ LOG_LEVEL=INFO
 
 # NEMO API Configuration
 NEMO_API_URL=https://nemo.stanford.edu/api/tools/
-NEMO_TOKEN=your_nemo_token_here
+NEMO_TOKEN=                        # Add your NEMO API token here
 ```
 
-**Important:** Replace `your_nemo_token_here` with your actual NEMO API token to enable automatic tool mapping generation.
+**Important:** Add your actual NEMO API token to enable automatic tool mapping generation.
 
 ### ESP32 (platformio.ini)
 ```ini
 build_flags = 
-    -DWIFI_SSID="your_wifi"
-    -DWIFI_PASSWORD="your_password"
-    -DMQTT_BROKER="192.168.1.100"    # VM server IP
+    -DWIFI_SSID="your_wifi_ssid"      # Replace with your WiFi SSID
+    -DWIFI_PASSWORD="your_wifi_password"  # Replace with your WiFi password
+    -DMQTT_BROKER="your_mqtt_broker_ip"  # Replace with your VM server's IP
     -DMQTT_PORT_ESP32=1883            # ESP32 MQTT port
     -DMQTT_USE_SSL=false              # SSL enabled/disabled
     -DTARGET_TOOL_NAME="woollam"      # Tool name for this display
@@ -362,10 +364,41 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 
 ## Security Notes
 
-- **SSL/TLS:** Recommended for production environments
-- **API Token:** Keep your NEMO token secure and don't commit it to version control
-- **Network:** Consider using VPN for remote access
-- **Firewall:** Restrict MQTT port access to trusted networks
+### 🔒 **CRITICAL SECURITY REQUIREMENTS**
+
+1. **Never commit real credentials to version control:**
+   - WiFi SSID and password in `platformio.ini`
+   - MQTT broker IP addresses
+   - NEMO API tokens in `config.env`
+   - Any other sensitive configuration
+
+2. **Use environment variables or local config files:**
+   - Keep `config.env` in `.gitignore` (already configured)
+   - Use placeholder values in committed files
+   - Set real values locally for development
+
+3. **API Token Security:**
+   - Keep your NEMO token secure and don't commit it to version control
+   - Use strong, unique tokens
+   - Rotate tokens regularly
+
+4. **MQTT Security:**
+   - Consider enabling SSL/TLS for production deployments
+   - Use authentication if possible
+   - Restrict broker access with firewall rules
+
+5. **Network Security:**
+   - Use VPN or firewall rules to restrict access to MQTT broker
+   - Consider using private networks for IoT devices
+   - Monitor network traffic for anomalies
+
+### 🛡️ **Security Checklist**
+- [ ] All real credentials removed from committed files
+- [ ] `config.env` is in `.gitignore` and not tracked
+- [ ] Placeholder values used in example configurations
+- [ ] MQTT broker secured with authentication (if needed)
+- [ ] Network access restricted appropriately
+- [ ] Regular security updates applied
 
 ## Contributing
 
