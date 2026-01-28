@@ -368,11 +368,18 @@ class NEMOToolServer:
                 port_1883_listening = self.check_port_listening(esp32_port)
                 port_1886_listening = self.check_port_listening(nemo_port)
                 
+                # Check SSL port if certificates exist
+                ssl_port_listening = False
+                if os.path.exists("mqtt/certs/ca.crt"):
+                    ssl_port_listening = self.check_port_listening(8883)
+                
                 # Only log if there are issues
-                if not nemo_connected or not esp32_connected or not port_1883_listening or not port_1886_listening:
+                if not nemo_connected or not esp32_connected or not port_1883_listening or not port_1886_listening or (os.path.exists("mqtt/certs/ca.crt") and not ssl_port_listening):
                     logger.info(f"🔍 CONNECTION STATUS CHECK:")
                     logger.info(f"   📥 NEMO (1886):  {'✅ Connected' if nemo_connected else '❌ Disconnected'} {'✅ Port Open' if port_1886_listening else '❌ Port Closed'}")
                     logger.info(f"   📤 ESP32 (1883): {'✅ Connected' if esp32_connected else '❌ Disconnected'} {'✅ Port Open' if port_1883_listening else '❌ Port Closed'}")
+                    if os.path.exists("mqtt/certs/ca.crt"):
+                        logger.info(f"   🔒 SSL (8883):   {'✅ Port Open' if ssl_port_listening else '❌ Port Closed'}")
                 
                 # If ESP32 port is closed, restart mosquitto
                 if not port_1883_listening:
@@ -423,16 +430,31 @@ class NEMOToolServer:
             # Wait for it to start
             await asyncio.sleep(3)
             
-            # Check if both ports are now listening
+            # Check if all ports are now listening
             esp32_port = get_esp32_port()
             nemo_port = get_nemo_port()
             port_1883_ok = self.check_port_listening(esp32_port)
             port_1886_ok = self.check_port_listening(nemo_port)
             
-            if port_1883_ok and port_1886_ok:
-                logger.info(f"✅ Mosquitto restarted successfully - both ports are open ({esp32_port}, {nemo_port})")
+            # Check SSL port if certificates exist
+            ssl_port_ok = False
+            ssl_message = ""
+            if os.path.exists("mqtt/certs/ca.crt"):
+                ssl_port_ok = self.check_port_listening(8883)
+                ssl_message = f", 8883 (SSL): {ssl_port_ok}"
+            
+            # Determine which ports to check
+            all_ports_ok = port_1883_ok and port_1886_ok
+            if os.path.exists("mqtt/certs/ca.crt"):
+                all_ports_ok = all_ports_ok and ssl_port_ok
+            
+            if all_ports_ok:
+                ports_list = f"{esp32_port}, {nemo_port}"
+                if os.path.exists("mqtt/certs/ca.crt"):
+                    ports_list += ", 8883 (SSL)"
+                logger.info(f"✅ Mosquitto restarted successfully - all ports are open ({ports_list})")
             else:
-                logger.error(f"❌ Mosquitto restart failed - Port {esp32_port}: {port_1883_ok}, Port {nemo_port}: {port_1886_ok}")
+                logger.error(f"❌ Mosquitto restart failed - Port {esp32_port}: {port_1883_ok}, Port {nemo_port}: {port_1886_ok}{ssl_message}")
                 
         except Exception as e:
             logger.error(f"❌ Failed to restart mosquitto: {e}")
