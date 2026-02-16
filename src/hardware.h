@@ -19,15 +19,17 @@
 #define ILI9488_DRIVER
 
 /* -----------------------------------------------------------------------------
- * ESP32 SPI pins
+ * ESP32 SPI pins (from README pinout)
+ * Display: SCK=25, MOSI=26, DC/RS=27, RESET=14, CS=13
+ * Touch:   T_DO (MISO)=32, T_DIN (MOSI)=26, T_CS=33, T_CLK=25, T_IRQ not specified
  * ----------------------------------------------------------------------------- */
-#define TFT_MISO 19   /* Leave disconnected if no other SPI devices share MISO */
-#define TFT_MOSI 23
-#define TFT_SCLK 18
-#define TFT_CS    15  /* Chip select */
-#define TFT_DC    2   /* Data/Command */
-#define TFT_RST   4   /* Reset (use -1 if tied to board RST) */
-/* #define TFT_BL   32 */
+#define TFT_MISO 32   /* Not specified in pinout; use -1 if unused */
+#define TFT_MOSI 26
+#define TFT_SCLK 25
+#define TFT_CS    13  /* Chip select */
+#define TFT_DC    27  /* Data/Command (DC/RS) */
+#define TFT_RST   14  /* Reset */
+/* #define TFT_BL   LED  - pin not specified in pinout */
 /* #define TFT_BACKLIGHT_ON  HIGH */
 
 /* -----------------------------------------------------------------------------

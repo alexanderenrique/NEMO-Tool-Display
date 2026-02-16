@@ -10,15 +10,9 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include "config.h"
+#include "hardware.h"
 
-// WiFi credentials - now from build flags
-const char* ssid = WIFI_SSID;
-const char* password = WIFI_PASSWORD;
 
-// MQTT Configuration - now from build flags
-const char* mqtt_broker = MQTT_BROKER;
-const int mqtt_port = MQTT_PORT_ESP32;
-const char* mqtt_client_id = MQTT_CLIENT_ID;
 // MQTT topics - use tool name and prefix from build flags
 String mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_NAME) + "/status";
 String mqtt_topic_overall = String(MQTT_TOPIC_PREFIX) + "/overall";

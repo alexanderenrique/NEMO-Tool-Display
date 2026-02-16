@@ -49,6 +49,20 @@ GPIO 16    →  RST
 3.3V       →  VCC
 GND        →  GND
 ```
+T_IRQ
+T_DO (Touch MISO) = 32
+T_DIN = 26
+T_CS = 33
+T_CLK = 25
+MISO
+LED
+SCK = 25
+MOSI = 26
+DC/RS = 27
+RESET = 14
+CS  = 13
+GND
+VCC
 
 ## Configuration
 
