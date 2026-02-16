@@ -62,5 +62,3 @@ Thumbs.db
 # Docker
 .dockerignore
 
-# ini file
-*.ini
