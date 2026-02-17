@@ -115,11 +115,7 @@ class NEMOToolServer:
             self.config['mqtt_broker'] = detected_ip
             logger.info(f"Auto-detected IP address: {detected_ip}")
         
-        # Log configuration
-        logger.info(f"Using MQTT broker: {self.config['mqtt_broker']}:{self.config['mqtt_port']}")
-        logger.info(f"Timezone offset: {self.config['timezone_offset_hours']} hours")
-        logger.info(f"Max name length: {self.config['max_name_length']} characters")
-        logger.info(f"Log level: {self.config['log_level']}")
+        logger.info(f"MQTT broker: {self.config['mqtt_broker']}:{self.config['mqtt_port']}")
         
         # TOOL MAPPING SYSTEM - COMMENTED OUT (NEMO sends tool names directly in topics)
         # We now use the tool name directly from the MQTT topic instead of looking up mappings
@@ -272,7 +268,7 @@ class NEMOToolServer:
             # Subscribe to tool status updates from NEMO backend
             client.subscribe("nemo/tools/+/+", qos=1)  # Subscribe to all tool events
             client.subscribe("nemo/tools/overall", qos=1)
-            logger.info("📥 Subscribed to NEMO tool status updates")
+            logger.info("📥 Subscribed to NEMO tool status updates (nemo/tools only)")
         else:
             logger.error(f"❌ NEMO MQTT connection failed with code {rc}")
     
@@ -375,11 +371,9 @@ class NEMOToolServer:
                 
                 # Only log if there are issues
                 if not nemo_connected or not esp32_connected or not port_1883_listening or not port_1886_listening or (os.path.exists("mqtt/certs/ca.crt") and not ssl_port_listening):
-                    logger.info(f"🔍 CONNECTION STATUS CHECK:")
-                    logger.info(f"   📥 NEMO (1886):  {'✅ Connected' if nemo_connected else '❌ Disconnected'} {'✅ Port Open' if port_1886_listening else '❌ Port Closed'}")
-                    logger.info(f"   📤 ESP32 (1883): {'✅ Connected' if esp32_connected else '❌ Disconnected'} {'✅ Port Open' if port_1883_listening else '❌ Port Closed'}")
-                    if os.path.exists("mqtt/certs/ca.crt"):
-                        logger.info(f"   🔒 SSL (8883):   {'✅ Port Open' if ssl_port_listening else '❌ Port Closed'}")
+                    nemo_ok = "connected" if nemo_connected else "disconnected"
+                    esp32_ok = "connected" if esp32_connected else "disconnected"
+                    logger.warning(f"⚠️ NEMO (1886): {nemo_ok} | ESP32 (1883): {esp32_ok} | Ports 1883/1886: {'open' if port_1883_listening and port_1886_listening else 'check'}")
                 
                 # If ESP32 port is closed, restart mosquitto
                 if not port_1883_listening:
@@ -425,7 +419,7 @@ class NEMOToolServer:
                 "mosquitto", 
                 "-c", "mqtt/config/mosquitto.conf", 
                 "-d"
-            ], cwd="/Users/adenton/Desktop/NEMO-Tool-Display/vm_server")
+            ], cwd=os.path.dirname(os.path.abspath(__file__)))
             
             # Wait for it to start
             await asyncio.sleep(3)
@@ -461,27 +455,31 @@ class NEMOToolServer:
     
     def on_mqtt_message(self, client, userdata, msg):
         """Handle incoming MQTT messages from NEMO backend"""
+        topic = msg.topic
         try:
-            topic = msg.topic
             payload = json.loads(msg.payload.decode())
-            
-            logger.info(f"Received message on topic: {topic}")
-            
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = None
+            raw = msg.payload.decode(errors="replace")
+            logger.debug(f"[1886] Other topic: {topic} -> {raw[:200]}{'...' if len(raw) > 200 else ''}")
+            return
+
+        try:
             # Handle individual tool status updates
             if topic.startswith("nemo/tools/") and len(topic.split("/")) >= 4:
                 parts = topic.split("/")
                 tool_name = parts[2]  # Tool name from topic (e.g., "woollam" from "nemo/tools/woollam/start")
                 event_type = parts[3]  # Extract event type (e.g., "start", "end", "enabled", "disabled")
-                
-                logger.info(f"Processing tool message: tool_name={tool_name}, event_type={event_type}")
-                
-                # Call process_tool_status with the tool_name directly
+                logger.info(f"📥 inbound  {topic} | {json.dumps(payload)}")
                 self.process_tool_status(tool_name, payload, event_type, tool_name)
-            
+
             # Handle overall status updates
             elif topic == "nemo/tools/overall":
+                logger.info(f"📥 inbound  {topic} | {json.dumps(payload)}")
                 self.process_overall_status(payload)
-                
+
+            else:
+                logger.debug(f"[1886] Other topic: {topic} -> {payload}")
         except Exception as e:
             logger.error(f"Error processing MQTT message: {e}")
     
@@ -494,7 +492,6 @@ class NEMOToolServer:
             event_type: The event type (start, end, enabled, disabled)
             _unused: Unused parameter (kept for backwards compatibility)
         """
-        logger.info(f"process_tool_status called: tool_name={tool_name}, event_type={event_type}")
         try:
             # Parse NEMO message format:
             # {"event": "tool_usage_start", "usage_id": 232, "user_id": 1, 
@@ -517,7 +514,7 @@ class NEMOToolServer:
                 # Try first name only
                 first_name = user_display_name.split()[0] if ' ' in user_display_name else user_display_name
                 user_display_name = first_name[:self.config['max_name_length']]
-                logger.info(f"Name too long, trimmed to: '{user_display_name}'")
+                logger.debug(f"Name too long, trimmed to: '{user_display_name}'")
             
             # Format timestamp to readable format (Month Day, Hour:Minute AM/PM)
             formatted_time = "Unknown"
@@ -576,16 +573,10 @@ class NEMOToolServer:
             # Forward to ESP32 display topic using tool name
             esp32_topic = f"nemo/esp32/{tool_name}/status"
             payload_json = json.dumps(esp32_message)
-            
-            logger.info(f"Publishing to ESP32 topic: {esp32_topic}")
-            logger.info(f"ESP32 message size: {len(payload_json)} bytes (trimmed from original)")
-            logger.info(f"ESP32 message content: {payload_json}")
-            
-            # Publish using the ESP32 client (port 1883)
+            logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
             result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
-            
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info(f"✅ Successfully forwarded {event_type} status for tool {tool_name} to ESP32 display")
+                logger.info(f"✅ {tool_name}: {event_type} → ESP32")
             else:
                 logger.error(f"❌ Failed to forward tool {tool_name} status: {result.rc} ({self.get_mqtt_error_description(result.rc)})")
                 
@@ -598,10 +589,10 @@ class NEMOToolServer:
             # Forward to ESP32 displays using ESP32 client (port 1883)
             esp32_topic = "nemo/esp32/overall"
             payload_json = json.dumps(overall_data)
-            
+            logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
             result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.debug("Forwarded overall status to ESP32 displays")
+                logger.info("✅ overall → ESP32")
             else:
                 logger.warning(f"Failed to forward overall status: {result.rc}")
                 
@@ -612,8 +603,6 @@ class NEMOToolServer:
     async def start(self):
         """Start the server"""
         logger.info("Starting NEMO Tool Display Server")
-        logger.info(f"Configuration: {self.config}")
-        
         try:
             # (REMOVED) Validate tool mappings before starting - not needed anymore
             # if not self.tool_id_to_name:
@@ -623,11 +612,7 @@ class NEMOToolServer:
             await self.init_mqtt()
             
             self.running = True
-            logger.info("Server started successfully, listening for tool status updates via MQTT")
-            
-            # (REMOVED) Log which tools we're monitoring - now we forward ALL tool events
-            # Tool names come directly from NEMO topics - no mapping file needed!
-            logger.info("Forwarding all tool events from NEMO to ESP32 displays")
+            logger.info("Server ready — NEMO (1886) → ESP32 (1883)")
             
             # Start connection status monitor
             asyncio.create_task(self.connection_status_monitor())
