@@ -13,8 +13,8 @@
 #include "hardware.h"
 
 
-// MQTT topics - use tool name and prefix from build flags
-String mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_NAME) + "/status";
+// MQTT topics - use tool ID and prefix from build flags
+String mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/status";
 String mqtt_topic_overall = String(MQTT_TOPIC_PREFIX) + "/overall";
 
 // Display configuration (TFT 480x320)
@@ -59,13 +59,13 @@ void setup() {
   Serial.begin(9600);
   Serial.println("NEMO Tool Display - Simple Test Starting...");
   
-  // Initialize tool display name from config
+  // Initialize tool display name from config (for display purposes only)
   toolDisplayName = capitalizeToolName(TARGET_TOOL_NAME);
   Serial.print("Tool Display Name: ");
   Serial.println(toolDisplayName);
   
-  // Initialize MQTT topic with tool name and prefix from build flags
-  mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_NAME) + "/status";
+  // Initialize MQTT topic with tool ID and prefix from build flags
+  mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/status";
   Serial.print("MQTT Status Topic: ");
   Serial.println(mqtt_topic_status);
   
@@ -397,6 +397,19 @@ void processMQTTMessage(const char* topic, const char* payload) {
       }
     }
     
+    
+    // Extract tool name from payload for display (if available)
+    if (doc["tool_name"].is<const char*>()) {
+      const char* toolNameFromPayload = doc["tool_name"];
+      // Update display name if different from config
+      String newDisplayName = capitalizeToolName(toolNameFromPayload);
+      if (newDisplayName != toolDisplayName && title_label) {
+        toolDisplayName = newDisplayName;
+        lv_label_set_text(title_label, toolDisplayName.c_str());
+        Serial.print("Updated tool display name: ");
+        Serial.println(toolDisplayName);
+      }
+    }
     
     // Extract tool status from event_type field and in_use status
     if (doc["event_type"].is<const char*>()) {

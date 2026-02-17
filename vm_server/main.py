@@ -126,8 +126,8 @@ class NEMOToolServer:
         # # Create reverse mapping: tool_name -> tool_id
         # self.tool_name_to_id = {name: id for id, name in self.tool_id_to_name.items()}
         
-        # Track last users for each tool (keyed by tool_name now)
-        self.last_users = {}  # tool_name -> user_name
+        # Track last users for each tool (keyed by tool_id)
+        self.last_users = {}  # tool_id (str) -> user_name
         
         self.mqtt_client_nemo = None  # Client for receiving from NEMO on port 1886
         self.mqtt_client_esp32 = None  # Client for publishing to ESP32s on port 1883
@@ -468,10 +468,10 @@ class NEMOToolServer:
             # Handle individual tool status updates
             if topic.startswith("nemo/tools/") and len(topic.split("/")) >= 4:
                 parts = topic.split("/")
-                tool_name = parts[2]  # Tool name from topic (e.g., "woollam" from "nemo/tools/woollam/start")
+                tool_identifier = parts[2]  # Tool ID or name from topic (e.g., "1" or "woollam" from "nemo/tools/1/start")
                 event_type = parts[3]  # Extract event type (e.g., "start", "end", "enabled", "disabled")
                 logger.info(f"📥 inbound  {topic} | {json.dumps(payload)}")
-                self.process_tool_status(tool_name, payload, event_type, tool_name)
+                self.process_tool_status(tool_identifier, payload, event_type)
 
             # Handle overall status updates
             elif topic == "nemo/tools/overall":
@@ -483,20 +483,32 @@ class NEMOToolServer:
         except Exception as e:
             logger.error(f"Error processing MQTT message: {e}")
     
-    def process_tool_status(self, tool_name: str, tool_data: dict, event_type: str = None, _unused: str = None):
+    def process_tool_status(self, tool_identifier: str, tool_data: dict, event_type: str = None):
         """Process individual tool status update and forward to ESP32 displays
         
         Args:
-            tool_name: Name of the tool (used for both tracking and ESP32 topic)
+            tool_identifier: Tool identifier from topic (ID or name, used for fallback)
             tool_data: The full message payload from NEMO
             event_type: The event type (start, end, enabled, disabled)
-            _unused: Unused parameter (kept for backwards compatibility)
         """
         try:
             # Parse NEMO message format:
             # {"event": "tool_usage_start", "usage_id": 232, "user_id": 1, 
             #  "user_name": "Alex Denton (admin)", "tool_id": 1, "tool_name": "woollam",
             #  "start_time": "2025-10-14T19:00:11.106294+00:00", "end_time": null}
+            
+            # Extract tool_id from payload (preferred) or use identifier from topic as fallback
+            tool_id = tool_data.get('tool_id')
+            if tool_id is None:
+                # Fallback: try to parse identifier as integer
+                try:
+                    tool_id = int(tool_identifier)
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not extract tool_id from payload or topic identifier '{tool_identifier}'")
+                    return
+            
+            # Extract tool_name from payload for display purposes only
+            tool_name = tool_data.get('tool_name', tool_identifier)
             
             # Extract user name from NEMO message
             full_user_name = tool_data.get('user_name', '')
@@ -539,9 +551,9 @@ class NEMOToolServer:
             # Handle user tracking for start/end events
             user_label = "User"
             if event_type in ["start", "end"]:
-                # Track the user for this tool
+                # Track the user for this tool (using tool_id as key)
                 if user_display_name:
-                    self.last_users[tool_name] = user_display_name
+                    self.last_users[str(tool_id)] = user_display_name
                 
                 if event_type == "start":
                     user_label = "User"
@@ -567,21 +579,22 @@ class NEMOToolServer:
                 "timestamp": formatted_time,
                 "time_label": time_label,
                 "user_label": user_label,
-                "user_name": user_display_name
+                "user_name": user_display_name,
+                "tool_name": tool_name  # Include tool name for display purposes
             }
             
-            # Forward to ESP32 display topic using tool name
-            esp32_topic = f"nemo/esp32/{tool_name}/status"
+            # Forward to ESP32 display topic using tool ID (not tool name)
+            esp32_topic = f"nemo/esp32/{tool_id}/status"
             payload_json = json.dumps(esp32_message)
             logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
             result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info(f"✅ {tool_name}: {event_type} → ESP32")
+                logger.info(f"✅ {tool_name} (ID: {tool_id}): {event_type} → ESP32")
             else:
-                logger.error(f"❌ Failed to forward tool {tool_name} status: {result.rc} ({self.get_mqtt_error_description(result.rc)})")
+                logger.error(f"❌ Failed to forward tool {tool_id} status: {result.rc} ({self.get_mqtt_error_description(result.rc)})")
                 
         except Exception as e:
-            logger.error(f"Error processing tool status for {tool_name}: {e}")
+            logger.error(f"Error processing tool status for tool_id {tool_id}: {e}")
     
     def process_overall_status(self, overall_data: dict):
         """Process overall status update and forward to ESP32 displays"""

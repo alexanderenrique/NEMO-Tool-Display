@@ -144,7 +144,7 @@ The `tool_mappings.yaml` file maps NEMO tool IDs to display names:
 - `nemo/backend/tools/overall` - Overall system status
 
 **ESP32 Output (to displays):**
-- `nemo/esp32/{tool_name}/status` - Tool status for specific display
+- `nemo/esp32/{tool_id}/status` - Tool status for specific display (uses tool ID for routing)
 - `nemo/esp32/overall` - Overall status for all displays
 
 **Server Status:**
