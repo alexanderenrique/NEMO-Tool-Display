@@ -50,6 +50,7 @@ void connectMQTT();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
 void processMQTTMessage(const char* topic, const char* payload);
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
+void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data);
 void create_simple_ui();
 String capitalizeToolName(const char* toolName);
 void updateConnectionStatus();
@@ -88,16 +89,26 @@ void setup() {
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
   
+  // Initialize touch input device for LVGL
+  static lv_indev_drv_t indev_drv;
+  lv_indev_drv_init(&indev_drv);
+  indev_drv.type = LV_INDEV_TYPE_POINTER;
+  indev_drv.read_cb = touch_read;
+  lv_indev_drv_register(&indev_drv);
+  
   // Create simple UI
   create_simple_ui();
   
-  // Connect to WiFi
-  setupWiFi();
+  // --- WiFi and MQTT commented out for touch testing ---
+  // setupWiFi();
+  // setupMQTT();
   
-  // Setup MQTT
-  setupMQTT();
+  if (status_label) {
+    lv_label_set_text(status_label, "Touch enabled");
+  }
   
-  Serial.println("Setup complete");
+  Serial.println("Touch input registered with LVGL (T_CS=33)");
+  Serial.println("Setup complete - touch test mode (WiFi/MQTT disabled)");
 }
 
 void loop() {
@@ -107,24 +118,24 @@ void loop() {
   // Handle LVGL tasks
   lv_timer_handler();
   
-  // Handle MQTT
-  if (!mqttClient.connected()) {
-    Serial.println("MQTT disconnected, attempting reconnect...");
-    connectMQTT();
+  // --- WiFi and MQTT commented out for touch testing ---
+  // {
+  //   static unsigned long lastMqttAttempt = 0;
+  //   static int mqttRetryCount = 0;
+  //   ...
+  // }
+  // mqttClient.loop();
+
+  // Heartbeat: if this stops printing, the main loop has stalled
+  static unsigned long lastHeartbeat = 0;
+  if (millis() - lastHeartbeat > 1000) {
+    lastHeartbeat = millis();
+    Serial.println("Touch heartbeat: poll active");
   }
-  mqttClient.loop();
-  
-  // Periodic status check (every 10 seconds)
-  static unsigned long lastStatusCheck = 0;
-  if (millis() - lastStatusCheck > DISPLAY_UPDATE_INTERVAL * 10) {
-    lastStatusCheck = millis();
-    Serial.print("MQTT Status: ");
-    Serial.println(mqttClient.connected() ? "CONNECTED" : "DISCONNECTED");
-    if (mqttClient.connected()) {
-      Serial.print("Waiting for messages on: ");
-      Serial.println(mqtt_topic_status);
-    }
-  }
+
+  // --- Periodic MQTT status check commented out for touch testing ---
+  // static unsigned long lastStatusCheck = 0;
+  // if (millis() - lastStatusCheck > DISPLAY_UPDATE_INTERVAL * 10) { ... }
   
   delay(5); // Reduced delay for LVGL responsiveness
 }
@@ -185,6 +196,26 @@ void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
   tft.endWrite();
   
   lv_disp_flush_ready(disp);
+}
+
+// Touch input read callback for LVGL
+void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data) {
+  uint16_t x = 0, y = 0;
+  bool touched = false;
+#ifdef TOUCH_CS
+  touched = tft.getTouch(&x, &y);
+#endif
+  if (touched) {
+    if (x >= DISPLAY_WIDTH) x = DISPLAY_WIDTH - 1;
+    if (y >= DISPLAY_HEIGHT) y = DISPLAY_HEIGHT - 1;
+    data->point.x = x;
+    data->point.y = y;
+    data->state = LV_INDEV_STATE_PRESSED;
+  } else {
+    data->state = LV_INDEV_STATE_RELEASED;
+    data->point.x = 0;
+    data->point.y = 0;
+  }
 }
 
 // Create simple LVGL UI

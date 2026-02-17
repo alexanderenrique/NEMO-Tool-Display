@@ -23,21 +23,38 @@
  * Display: SCK=25, MOSI=26, DC/RS=27, RESET=14, CS=13
  * Touch:   T_DO (MISO)=32, T_DIN (MOSI)=26, T_CS=33, T_CLK=25, T_IRQ not specified
  * ----------------------------------------------------------------------------- */
-#define TFT_MISO 32   /* Not specified in pinout; use -1 if unused */
-#define TFT_MOSI 26
+
+ //T_IRQ not used
+ #define TFT_MISO 32   // T_DO
+ //T_DIN = 26, TFT_MOSI = 26
+#define TOUCH_CS  33  // T_CS
+//T_CLK = 25
+//TFT_MISO = 32
+//LED
 #define TFT_SCLK 25
-#define TFT_CS    13  /* Chip select */
+#define TFT_MOSI 26   // T_DIN
 #define TFT_DC    27  /* Data/Command (DC/RS) */
 #define TFT_RST   14  /* Reset */
-/* #define TFT_BL   LED  - pin not specified in pinout */
-/* #define TFT_BACKLIGHT_ON  HIGH */
+#define TFT_CS    13  /* Chip select */
+//GND
+//VCC
+
+#define SPI_TOUCH_FREQUENCY  2500000  /* XPT2046 max ~2.5MHz; required for touch */
+
+/* XPT2046 calibration (480x320) - adjust if touch is off; use TFT_eSPI Touch_calibrate sketch to find values */
+#define XPT2046_X_MIN     200
+#define XPT2046_X_MAX     3800
+#define XPT2046_Y_MIN     200
+#define XPT2046_Y_MAX     3800
+
+/* SPI transactions required for ESP32 to switch between TFT and touch on shared bus */
+#define SUPPORT_TRANSACTIONS
 
 /* -----------------------------------------------------------------------------
  * SPI frequency (Hz)
  * ----------------------------------------------------------------------------- */
 #define SPI_FREQUENCY       27000000
 #define SPI_READ_FREQUENCY  16000000
-#define SPI_TOUCH_FREQUENCY 2500000
 
 /* -----------------------------------------------------------------------------
  * Fonts to load (comment out to save flash)
