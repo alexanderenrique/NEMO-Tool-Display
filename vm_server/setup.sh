@@ -493,6 +493,74 @@ show_status() {
     echo "  - Logs: tail -f nemo_server.log"
 }
 
+# Function to get VM IP address
+get_vm_ip() {
+    local ip=""
+    local os=$(detect_os)
+    
+    # Try method 1: Get IP from default route interface (Linux)
+    if [ "$os" != "macos" ] && command_exists ip; then
+        ip=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K\S+' | head -1)
+    fi
+    
+    # Try method 2: Use ifconfig (works on both Linux and macOS)
+    if [ -z "$ip" ] || [ "$ip" = "127.0.0.1" ]; then
+        if command_exists ifconfig; then
+            if [ "$os" = "macos" ]; then
+                # macOS: Get IP from active network interfaces (en0, en1, etc.)
+                for interface in en0 en1 eth0 wlan0; do
+                    ip=$(ifconfig "$interface" 2>/dev/null | grep "inet " | awk '{print $2}' | grep -v '127.0.0.1')
+                    if [ -n "$ip" ] && [ "$ip" != "127.0.0.1" ]; then
+                        break
+                    fi
+                done
+            else
+                # Linux: Get IP from non-loopback interface
+                ip=$(ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -1)
+            fi
+        fi
+    fi
+    
+    # Try method 3: Use route command to find default interface (macOS/Linux)
+    if [ -z "$ip" ] || [ "$ip" = "127.0.0.1" ]; then
+        if [ "$os" = "macos" ] && command_exists route; then
+            local default_if=$(route get default 2>/dev/null | grep interface | awk '{print $2}')
+            if [ -n "$default_if" ]; then
+                ip=$(ifconfig "$default_if" 2>/dev/null | grep "inet " | awk '{print $2}' | grep -v '127.0.0.1')
+            fi
+        elif [ "$os" != "macos" ] && command_exists ip; then
+            local default_if=$(ip route | grep default | awk '{print $5}' | head -1)
+            if [ -n "$default_if" ]; then
+                ip=$(ip addr show "$default_if" 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 | grep -v '127.0.0.1')
+            fi
+        fi
+    fi
+    
+    # Fallback: Show a message if we can't determine IP
+    if [ -z "$ip" ] || [ "$ip" = "127.0.0.1" ]; then
+        ip="<unable to detect - check network settings>"
+    fi
+    
+    echo "$ip"
+}
+
+# Function to display VM IP address for NEMO configuration
+display_vm_ip() {
+    print_header "VM IP Address for NEMO Configuration"
+    
+    local vm_ip=$(get_vm_ip)
+    
+    echo ""
+    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}VM IP Address:${NC} ${YELLOW}$vm_ip${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+    echo ""
+    print_info "Copy the IP address above and configure it in your NEMO backend:"
+    echo "  - MQTT Broker Host: $vm_ip"
+    echo "  - MQTT Port: $(python3 -c "from config_parser import get_nemo_port; print(get_nemo_port())" 2>/dev/null || echo "1886") (non-TLS) or 8883 (TLS)"
+    echo ""
+}
+
 # Main execution
 main() {
     print_header "NEMO Tool Display Setup"
@@ -572,18 +640,42 @@ main() {
     # Create Mosquitto configuration
     create_mosquitto_config
     
-    # Start services
-    start_services
-    
-    # Show status
-    show_status
-    
-    # Display CA certificate again if SSL was enabled
+    # Display CA certificate if SSL was enabled (so user can copy it)
     if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
         echo ""
         display_ca_certificate
         echo ""
     fi
+    
+    # Display VM IP address for NEMO configuration (so user can copy it)
+    display_vm_ip
+    
+    # Ask user if ready to launch services
+    echo ""
+    print_header "Ready to Launch Services?"
+    echo "Before starting the MQTT broker and NEMO server, make sure you have:"
+    if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
+        echo "  ✓ Copied the CA certificate (shown above)"
+    fi
+    echo "  ✓ Copied the VM IP address (shown above)"
+    echo ""
+    read -p "Ready to launch MQTT broker and NEMO server? (Y/n): " -n 1 -r
+    echo ""
+    
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        print_info "Setup paused. Run the script again when ready, or start services manually:"
+        echo "  - MQTT broker: mosquitto -c mqtt/config/mosquitto.conf -d"
+        echo "  - NEMO server: source venv/bin/activate && python3 main.py"
+        echo ""
+        print_warning "Services were not started. Configuration is ready."
+        return 0
+    fi
+    
+    # Start services
+    start_services
+    
+    # Show status
+    show_status
     
     print_success "NEMO Tool Display setup completed successfully!"
 }

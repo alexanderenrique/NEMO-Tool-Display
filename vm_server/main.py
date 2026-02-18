@@ -35,8 +35,9 @@ def load_config():
     config = {}
     
     # MQTT Configuration
-    config['mqtt_broker'] = os.getenv('MQTT_BROKER')
-    config['mqtt_port'] = int(os.getenv('MQTT_PORT', '1883'))
+    # MQTT_BROKER defaults to localhost since Mosquitto runs on the same VM
+    # Note: NEMO backend needs to know the VM's IP address (e.g., 10.0.0.31) to connect to Mosquitto
+    config['mqtt_broker'] = os.getenv('MQTT_BROKER', 'localhost')
     config['mqtt_use_ssl'] = os.getenv('MQTT_USE_SSL', 'false').lower() == 'true'
     config['mqtt_username'] = os.getenv('MQTT_USERNAME', '')
     config['mqtt_password'] = os.getenv('MQTT_PASSWORD', '')
@@ -49,11 +50,6 @@ def load_config():
     config['log_level'] = os.getenv('LOG_LEVEL', 'INFO').upper()
     
     # Validate required configurations
-    if not config['mqtt_broker']:
-        raise ValueError("MQTT_BROKER must be set in config.env")
-    
-    if config['mqtt_port'] < 1 or config['mqtt_port'] > 65535:
-        raise ValueError("MQTT_PORT must be between 1 and 65535")
     
     if config['timezone_offset_hours'] < -12 or config['timezone_offset_hours'] > 14:
         raise ValueError("TIMEZONE_OFFSET_HOURS must be between -12 and 14")
@@ -110,13 +106,8 @@ class NEMOToolServer:
         # Load configuration
         self.config = CONFIG
         
-        # Auto-detect IP address if MQTT_BROKER is not set
-        if not self.config['mqtt_broker']:
-            detected_ip = get_local_ip()
-            self.config['mqtt_broker'] = detected_ip
-            logger.info(f"Auto-detected IP address: {detected_ip}")
-        
-        logger.info(f"MQTT broker: {self.config['mqtt_broker']}:{self.config['mqtt_port']}")
+        # MQTT broker defaults to localhost (Mosquitto runs on same VM)
+        logger.info(f"MQTT broker: {self.config['mqtt_broker']}")
         
         # TOOL MAPPING SYSTEM - COMMENTED OUT (NEMO sends tool names directly in topics)
         # We now use the tool name directly from the MQTT topic instead of looking up mappings
@@ -227,9 +218,9 @@ class NEMOToolServer:
         self.mqtt_client_esp32.keepalive = 60
         
         try:
-            # Connect NEMO client to port 1886
+            # Connect NEMO client to port 1886 (non-TLS) or 8883 (TLS)
             protocol = "mqtts" if self.config['mqtt_use_ssl'] else "mqtt"
-            nemo_port = self.config['mqtt_port']
+            nemo_port = 8883 if self.config['mqtt_use_ssl'] else get_nemo_port()
             logger.info(f"Connecting NEMO client to {protocol}://{self.config['mqtt_broker']}:{nemo_port}")
             self.mqtt_client_nemo.connect(self.config['mqtt_broker'], nemo_port, 60)
             self.mqtt_client_nemo.loop_start()
