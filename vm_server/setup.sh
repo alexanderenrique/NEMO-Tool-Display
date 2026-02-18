@@ -75,7 +75,6 @@ install_mosquitto() {
     
     if command_exists mosquitto; then
         print_success "Mosquitto is already installed"
-        mosquitto --version
         return 0
     fi
     
@@ -117,7 +116,6 @@ install_mosquitto() {
     
     if command_exists mosquitto; then
         print_success "Mosquitto installed successfully"
-        mosquitto --version
     else
         print_error "Failed to install Mosquitto"
         exit 1
