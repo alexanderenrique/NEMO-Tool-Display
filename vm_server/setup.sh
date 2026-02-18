@@ -132,13 +132,23 @@ stop_existing_processes() {
         pkill -f "python.*main\.py" 2>/dev/null || true
     fi
     
-    # Stop MQTT broker
-    if pgrep -f "mosquitto.*mqtt/config/mosquitto.conf" >/dev/null 2>&1; then
-        print_info "Stopping existing MQTT broker..."
-        pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
+    # Stop ALL Mosquitto processes (including systemd service)
+    if pgrep mosquitto >/dev/null 2>&1; then
+        print_info "Stopping all Mosquitto processes..."
+        # Try graceful stop first
+        pkill mosquitto 2>/dev/null || true
+        sleep 1
+        # Force kill if still running
+        pkill -9 mosquitto 2>/dev/null || true
     fi
     
-    # Clean up ports
+    # Stop systemd Mosquitto service if it exists
+    if systemctl is-active --quiet mosquitto 2>/dev/null; then
+        print_info "Stopping systemd Mosquitto service..."
+        sudo systemctl stop mosquitto 2>/dev/null || true
+    fi
+    
+    # Clean up ports - kill anything using our ports
     for port in 1883 1886 8883 9001; do
         if lsof -ti :$port >/dev/null 2>&1; then
             print_info "Clearing port $port..."
@@ -146,8 +156,22 @@ stop_existing_processes() {
         fi
     done
     
-    sleep 2
-    print_success "Existing processes stopped"
+    sleep 3
+    
+    # Verify ports are free
+    ports_free=true
+    for port in 1883 1886; do
+        if lsof -ti :$port >/dev/null 2>&1; then
+            print_warning "Port $port is still in use after cleanup attempt"
+            ports_free=false
+        fi
+    done
+    
+    if [ "$ports_free" = true ]; then
+        print_success "Existing processes stopped and ports freed"
+    else
+        print_warning "Some ports may still be in use. Manual cleanup may be needed."
+    fi
 }
 
 # Function to setup Python environment
@@ -436,15 +460,25 @@ start_services() {
         chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
     fi
     
-    # Check if ports are already in use
+    # Check if ports are already in use and free them
     ESP32_PORT=$(python3 -c "from config_parser import get_esp32_port; print(get_esp32_port())" 2>/dev/null || echo "1883")
     NEMO_PORT=$(python3 -c "from config_parser import get_nemo_port; print(get_nemo_port())" 2>/dev/null || echo "1886")
     
     for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
             print_warning "Port $port is already in use. Attempting to free it..."
+            # Kill any process using the port
             lsof -ti :$port | xargs kill -9 2>/dev/null || true
-            sleep 1
+            sleep 2
+            # Verify it's free now
+            if lsof -ti :$port >/dev/null 2>&1; then
+                print_error "Port $port is still in use after cleanup attempt!"
+                print_error "Please manually stop the process using port $port:"
+                print_error "  sudo lsof -ti :$port | xargs kill -9"
+                return 1
+            else
+                print_success "Port $port is now free"
+            fi
         fi
     done
     
@@ -723,6 +757,10 @@ main() {
         print_warning "Services were not started. Configuration is ready."
         return 0
     fi
+    
+    # Stop any processes that might have started during setup
+    print_info "Ensuring ports are free before starting services..."
+    stop_existing_processes
     
     # Start services
     start_services
