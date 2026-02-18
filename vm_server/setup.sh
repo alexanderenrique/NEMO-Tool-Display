@@ -334,6 +334,13 @@ create_mosquitto_config() {
     # Create necessary directories
     mkdir -p "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"
     
+    # Fix permissions on data directory (Mosquitto requires secure permissions)
+    chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
+    # Fix permissions on any existing database file
+    if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
+        chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
+    fi
+    
     # Get ports from centralized config
     ESP32_PORT=$(python3 -c "from config_parser import get_esp32_port; print(get_esp32_port())" 2>/dev/null || echo "1883")
     NEMO_PORT=$(python3 -c "from config_parser import get_nemo_port; print(get_nemo_port())" 2>/dev/null || echo "1886")
@@ -416,7 +423,35 @@ start_services() {
     
     # Start MQTT broker
     print_info "Starting MQTT broker..."
-    mosquitto -c "$CONFIG_FILE" -d
+    
+    # Verify config file exists
+    if [ ! -f "$CONFIG_FILE" ]; then
+        print_error "Mosquitto config file not found: $CONFIG_FILE"
+        return 1
+    fi
+    
+    # Fix permissions on data directory before starting
+    chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
+    if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
+        chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
+    fi
+    
+    # Check if ports are already in use
+    ESP32_PORT=$(python3 -c "from config_parser import get_esp32_port; print(get_esp32_port())" 2>/dev/null || echo "1883")
+    NEMO_PORT=$(python3 -c "from config_parser import get_nemo_port; print(get_nemo_port())" 2>/dev/null || echo "1886")
+    
+    for port in $ESP32_PORT $NEMO_PORT; do
+        if lsof -ti :$port >/dev/null 2>&1; then
+            print_warning "Port $port is already in use. Attempting to free it..."
+            lsof -ti :$port | xargs kill -9 2>/dev/null || true
+            sleep 1
+        fi
+    done
+    
+    # Try to start Mosquitto and capture any errors
+    MOSQUITTO_ERROR=$(mosquitto -c "$CONFIG_FILE" -d 2>&1)
+    MOSQUITTO_EXIT=$?
+    
     sleep 3
     
     # Verify MQTT broker is running
@@ -424,6 +459,24 @@ start_services() {
         print_success "MQTT broker started successfully"
     else
         print_error "Failed to start MQTT broker"
+        
+        # Show any error output
+        if [ -n "$MOSQUITTO_ERROR" ]; then
+            print_error "Mosquitto error: $MOSQUITTO_ERROR"
+        fi
+        
+        # Check if there's an error in the log file
+        if [ -f "$MQTT_LOG_DIR/mosquitto.log" ]; then
+            print_info "Recent Mosquitto log entries:"
+            tail -10 "$MQTT_LOG_DIR/mosquitto.log" | sed 's/^/  /'
+        fi
+        
+        # Try to start without -d flag to see errors
+        print_info "Attempting to start Mosquitto in foreground to see errors..."
+        print_info "Running: mosquitto -c $CONFIG_FILE"
+        print_warning "If Mosquitto starts successfully, press Ctrl+C and check the error above"
+        mosquitto -c "$CONFIG_FILE" 2>&1 | head -20 || true
+        
         return 1
     fi
     

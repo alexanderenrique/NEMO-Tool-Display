@@ -104,6 +104,16 @@ kill_all_processes() {
 start_services() {
     # Start MQTT broker
     print_info "Starting MQTT broker..."
+    
+    # Fix permissions on data directory before starting
+    MQTT_DATA_DIR="$SCRIPT_DIR/mqtt/data"
+    if [ -d "$MQTT_DATA_DIR" ]; then
+        chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
+        if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
+            chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
+        fi
+    fi
+    
     mosquitto -c "$CONFIG_FILE" -d
     sleep 3
     
