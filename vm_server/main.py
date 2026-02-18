@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 from config_parser import get_mqtt_ports, get_esp32_port, get_nemo_port, get_mqtt_broker
+from download_tools import generate_from_api
 
 # Optional YAML import - only needed if tool_mappings.yaml exists
 try:
@@ -683,6 +684,21 @@ def validate_environment():
 async def main():
     """Main entry point"""
     logger.info("NEMO Tool Display Server - Starting up")
+    
+    # Generate or refresh tool mappings from NEMO API when endpoint and token are configured
+    nemo_url = os.getenv('NEMO_API_URL')
+    nemo_token = os.getenv('NEMO_TOKEN')
+    if nemo_url and nemo_token and nemo_token != 'your_nemo_token_here':
+        logger.info("Generating tool mappings from NEMO API...")
+        if generate_from_api('tool_mappings.yaml'):
+            logger.info("Tool mappings updated successfully")
+        else:
+            logger.warning("Tool mapping generation failed; using existing tool_mappings.yaml if present")
+    elif not os.path.exists('tool_mappings.yaml'):
+        logger.warning(
+            "NEMO_API_URL and NEMO_TOKEN not set (or token placeholder). "
+            "Set them in config.env to auto-generate tool_mappings.yaml, or create the file manually."
+        )
     
     # Validate environment before starting
     if not validate_environment():
