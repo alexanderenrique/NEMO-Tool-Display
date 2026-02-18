@@ -390,12 +390,12 @@ log_type notice
 log_type information
 
 # Network settings - ESP32 displays
-listener $ESP32_PORT
+listener $ESP32_PORT 0.0.0.0
 protocol mqtt
 allow_anonymous true
 
 # Network settings - NEMO backend
-listener $NEMO_PORT
+listener $NEMO_PORT 0.0.0.0
 protocol mqtt
 allow_anonymous true
 EOF
@@ -405,7 +405,7 @@ EOF
         cat >> "$CONFIG_FILE" << EOF
 
 # SSL/TLS listener for secure NEMO connections
-listener 8883
+listener 8883 0.0.0.0
 protocol mqtt
 cafile $SCRIPT_DIR/mqtt/certs/ca.crt
 certfile $SCRIPT_DIR/mqtt/certs/server.crt
@@ -420,7 +420,7 @@ EOF
     cat >> "$CONFIG_FILE" << EOF
 
 # WebSocket support (optional)
-listener 9001
+listener 9001 0.0.0.0
 protocol websockets
 allow_anonymous true
 
