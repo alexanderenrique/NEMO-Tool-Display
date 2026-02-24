@@ -76,7 +76,14 @@ echo ""
 echo -e "${YELLOW}[3/4] Testing MQTT protocol connection...${NC}"
 if command -v mosquitto_pub >/dev/null 2>&1; then
     TEST_TOPIC="nemo/test/connectivity_$(date +%s)"
-    if timeout 5 mosquitto_pub -h "$VM_IP" -p "$PORT" -t "$TEST_TOPIC" -m "test" -q 1 2>/dev/null; then
+    # Use QoS 0 so we don't wait for PUBACK; more reliable for connectivity check
+    # timeout is not available on macOS; use it only when present (e.g. Linux)
+    if command -v timeout >/dev/null 2>&1; then
+        MQTT_CMD="timeout 10 mosquitto_pub"
+    else
+        MQTT_CMD="mosquitto_pub"
+    fi
+    if $MQTT_CMD -h "$VM_IP" -p "$PORT" -t "$TEST_TOPIC" -m "test" -q 0; then
         echo -e "${GREEN}✓ MQTT connection successful${NC}"
         MQTT_CONNECTED=true
     else

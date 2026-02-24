@@ -356,13 +356,16 @@ class NEMOToolServer:
                 port_1883_listening = self.check_port_listening(esp32_port)
                 port_1886_listening = self.check_port_listening(nemo_port)
                 
-                # Check SSL port if certificates exist
-                ssl_port_listening = False
-                if os.path.exists("mqtt/certs/ca.crt"):
-                    ssl_port_listening = self.check_port_listening(8883)
+                # Only require SSL port when TLS is enabled in config (avoids false warnings when testing without TLS)
+                ssl_required = self.config.get("mqtt_use_ssl", False)
+                ssl_ok = (
+                    self.check_port_listening(8883)
+                    if (ssl_required and os.path.exists("mqtt/certs/ca.crt"))
+                    else True
+                )
                 
                 # Only log if there are issues
-                if not nemo_connected or not esp32_connected or not port_1883_listening or not port_1886_listening or (os.path.exists("mqtt/certs/ca.crt") and not ssl_port_listening):
+                if not nemo_connected or not esp32_connected or not port_1883_listening or not port_1886_listening or not ssl_ok:
                     nemo_ok = "connected" if nemo_connected else "disconnected"
                     esp32_ok = "connected" if esp32_connected else "disconnected"
                     logger.warning(f"⚠️ NEMO (1886): {nemo_ok} | ESP32 (1883): {esp32_ok} | Ports 1883/1886: {'open' if port_1883_listening and port_1886_listening else 'check'}")
@@ -476,14 +479,18 @@ class NEMOToolServer:
             logger.error(f"Error processing MQTT message: {e}")
     
     def process_tool_status(self, tool_identifier: str, tool_data: dict, event_type: str = None):
-        """Process individual tool status update and forward to ESP32 displays
+        """Process individual tool status update and forward to ESP32 displays.
         
-        Args:
-            tool_identifier: Tool identifier from topic (ID or name, used for fallback)
-            tool_data: The full message payload from NEMO
-            event_type: The event type (start, end, enabled, disabled)
+        NEMO sends separate events: enabled/disabled (tool on/off) and start/end (usage session).
+        We only forward start/end/disabled and map to the event_type values the ESP32 expects:
+        active (in use), idle (available), disabled (tool off). We skip "enabled" to avoid
+        duplicate messages when NEMO sends both "enabled" and "start" for the same action.
         """
         try:
+            # Skip "enabled" so we don't send two messages (enabled then start) for one user action
+            if event_type == "enabled":
+                return
+            
             # Parse NEMO message format:
             # {"event": "tool_usage_start", "usage_id": 232, "user_id": 1, 
             #  "user_name": "Alex Denton (admin)", "tool_id": 1, "tool_name": "woollam",
@@ -520,73 +527,63 @@ class NEMOToolServer:
                 user_display_name = first_name[:self.config['max_name_length']]
                 logger.debug(f"Name too long, trimmed to: '{user_display_name}'")
             
+            # Map NEMO event types to ESP32 vocabulary (ESP32 expects active / idle / disabled only)
+            # start = someone using tool -> active; end = session over -> idle; disabled = tool off
+            ESP32_ACTIVE = "active"
+            ESP32_IDLE = "idle"
+            ESP32_DISABLED = "disabled"
+            if event_type == "start":
+                esp32_event = ESP32_ACTIVE
+            elif event_type == "end":
+                esp32_event = ESP32_IDLE
+            elif event_type == "disabled":
+                esp32_event = ESP32_DISABLED
+            else:
+                return  # only forward start, end, disabled
+            
             # Format timestamp to readable format (Month Day, Hour:Minute AM/PM)
             formatted_time = "Unknown"
-            # NEMO uses 'start_time' for start events and 'end_time' for end events
-            timestamp_field = 'start_time' if event_type == 'start' else 'end_time'
+            timestamp_field = "start_time" if event_type == "start" else "end_time"
             timestamp_value = tool_data.get(timestamp_field)
             
             if timestamp_value:
                 try:
                     from datetime import datetime, timedelta
-                    # Parse the ISO timestamp
-                    dt = datetime.fromisoformat(timestamp_value.replace('Z', '+00:00'))
-                    # Apply timezone offset
-                    dt = dt + timedelta(hours=self.config['timezone_offset_hours'])
-                    # Format as "Oct 14, 12:10 PM"
+                    dt = datetime.fromisoformat(timestamp_value.replace("Z", "+00:00"))
+                    dt = dt + timedelta(hours=self.config["timezone_offset_hours"])
                     formatted_time = dt.strftime("%b %d, %I:%M %p")
                     logger.debug(f"Parsed timestamp: {timestamp_value} -> {formatted_time}")
                 except Exception as e:
                     logger.warning(f"Failed to parse timestamp '{timestamp_value}': {e}")
                     formatted_time = "Invalid Time"
             
-            # Handle user tracking for start/end events
-            user_label = "User"
-            if event_type in ["start", "end"]:
-                # Track the user for this tool (using tool_id as key)
-                if user_display_name:
-                    self.last_users[str(tool_id)] = user_display_name
-                
-                if event_type == "start":
-                    user_label = "User"
-                else:  # end
-                    user_label = "Last User"
+            # User labels: active = "User", idle/disabled = "Last User"
+            if user_display_name:
+                self.last_users[str(tool_id)] = user_display_name
+            user_label = "User" if esp32_event == ESP32_ACTIVE else "Last User"
+            time_label = "Enabled Since" if esp32_event != ESP32_DISABLED else "Disabled Since"
             
-            # Determine time label based on event type
-            time_label = "Time"
-            if event_type == "enabled":
-                time_label = "Enabled Since"
-            elif event_type == "disabled":
-                time_label = "Disabled Since"
-            elif event_type == "start":
-                time_label = "Started"
-            elif event_type == "end":
-                time_label = "Ended"
-            
-            # Create minimal message for ESP32 - only essential fields
-            # This trimming is critical to avoid overloading ESP32 memory!
-            # Original NEMO messages can be 1KB+, we trim to ~150 bytes
+            # Create minimal message for ESP32 - only fields the display uses (config.h: active/idle/disabled)
             esp32_message = {
-                "event_type": event_type,
+                "event_type": esp32_event,
                 "timestamp": formatted_time,
                 "time_label": time_label,
                 "user_label": user_label,
                 "user_name": user_display_name,
-                "tool_name": tool_name  # Include tool name for display purposes
+                "tool_name": tool_name,
             }
             
-            # Forward to ESP32 display topic using tool ID (not tool name)
             esp32_topic = f"nemo/esp32/{tool_id}/status"
             payload_json = json.dumps(esp32_message)
             logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
             result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info(f"✅ {tool_name} (ID: {tool_id}): {event_type} → ESP32")
+                logger.info(f"✅ {tool_name} (ID: {tool_id}): {esp32_event} → ESP32")
             else:
                 logger.error(f"❌ Failed to forward tool {tool_id} status: {result.rc} ({self.get_mqtt_error_description(result.rc)})")
                 
         except Exception as e:
-            logger.error(f"Error processing tool status for tool_id {tool_id}: {e}")
+            logger.error(f"Error processing tool status for {tool_identifier}: {e}")
     
     def process_overall_status(self, overall_data: dict):
         """Process overall status update and forward to ESP32 displays"""
