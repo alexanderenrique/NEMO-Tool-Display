@@ -454,7 +454,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
       // Update time label based on tool status
       if (time_label) {
         String timeLabelText = "";
-        if (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_IDLE) == 0) {
+      if (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_ENABLED) == 0 || strcmp(eventType, STATUS_IDLE) == 0) {
           timeLabelText = "Enabled Since";
         } else if (strcmp(eventType, "disabled") == 0) {
           timeLabelText = "Disabled Since";
@@ -469,7 +469,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
       // Update user label based on tool status
       if (user_label) {
         String userLabelText = "";
-        if (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_IDLE) == 0) {
+      if (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_ENABLED) == 0 || strcmp(eventType, STATUS_IDLE) == 0) {
           userLabelText = "User";
         } else if (strcmp(eventType, "disabled") == 0) {
           userLabelText = "Last User";
@@ -482,8 +482,12 @@ void processMQTTMessage(const char* topic, const char* payload) {
       }
       
       // Update status indicator based on tool state
-      // Consider "active" and "idle" as enabled states, "disabled" as disabled
-      bool isToolEnabled = (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_IDLE) == 0);
+    // Consider "active" and "enabled" (and legacy "idle") as enabled states, "disabled" as disabled
+    bool isToolEnabled = (
+      strcmp(eventType, STATUS_ACTIVE) == 0 ||
+      strcmp(eventType, STATUS_ENABLED) == 0 ||
+      strcmp(eventType, STATUS_IDLE) == 0
+    );
       updateStatusIndicator(isToolEnabled);
     }
   }

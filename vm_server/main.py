@@ -451,13 +451,11 @@ class NEMOToolServer:
     def on_mqtt_message(self, client, userdata, msg):
         """Handle incoming MQTT messages from NEMO backend"""
         topic = msg.topic
+        raw_payload = msg.payload.decode(errors="replace")
         try:
-            payload = json.loads(msg.payload.decode())
+            payload = json.loads(raw_payload)
         except (json.JSONDecodeError, UnicodeDecodeError):
             payload = None
-            raw = msg.payload.decode(errors="replace")
-            logger.debug(f"[1886] Other topic: {topic} -> {raw[:200]}{'...' if len(raw) > 200 else ''}")
-            return
 
         try:
             # Handle individual tool status updates
@@ -465,8 +463,32 @@ class NEMOToolServer:
                 parts = topic.split("/")
                 tool_identifier = parts[2]  # Tool ID or name from topic (e.g., "1" or "woollam" from "nemo/tools/1/start")
                 event_type = parts[3]  # Extract event type (e.g., "start", "end", "enabled", "disabled")
-                logger.info(f"📥 inbound  {topic} | {json.dumps(payload)}")
-                self.process_tool_status(tool_identifier, payload, event_type)
+
+                # NEMO may publish non-JSON payloads for simple enabled/disabled topics.
+                # Normalize into a dict so downstream processing is consistent.
+                if isinstance(payload, dict):
+                    tool_data = payload
+                else:
+                    tool_data = {}
+                    if payload is not None:
+                        tool_data["value"] = payload
+
+                # Ensure tool_id/tool_name exist even when payload is empty/non-JSON.
+                if "tool_id" not in tool_data:
+                    try:
+                        tool_data["tool_id"] = int(tool_identifier)
+                    except (ValueError, TypeError):
+                        pass
+                tool_data.setdefault("tool_name", tool_identifier)
+                tool_data.setdefault("timestamp", datetime.utcnow().isoformat() + "+00:00")
+
+                if isinstance(payload, dict):
+                    logger.info(f"📥 inbound  {topic} | {json.dumps(payload)}")
+                else:
+                    logger.info(
+                        f"📥 inbound  {topic} | {raw_payload[:200]}{'...' if len(raw_payload) > 200 else ''}"
+                    )
+                self.process_tool_status(tool_identifier, tool_data, event_type)
 
             # Handle overall status updates
             elif topic == "nemo/tools/overall":
@@ -474,7 +496,12 @@ class NEMOToolServer:
                 self.process_overall_status(payload)
 
             else:
-                logger.debug(f"[1886] Other topic: {topic} -> {payload}")
+                if payload is None:
+                    logger.debug(
+                        f"[1886] Other topic: {topic} -> {raw_payload[:200]}{'...' if len(raw_payload) > 200 else ''}"
+                    )
+                else:
+                    logger.debug(f"[1886] Other topic: {topic} -> {payload}")
         except Exception as e:
             logger.error(f"Error processing MQTT message: {e}")
     
@@ -482,15 +509,10 @@ class NEMOToolServer:
         """Process individual tool status update and forward to ESP32 displays.
         
         NEMO sends separate events: enabled/disabled (tool on/off) and start/end (usage session).
-        We only forward start/end/disabled and map to the event_type values the ESP32 expects:
-        active (in use), idle (available), disabled (tool off). We skip "enabled" to avoid
-        duplicate messages when NEMO sends both "enabled" and "start" for the same action.
+        We forward start/end/enabled/disabled and map to a consistent vocabulary:
+        active (in use), enabled (available), disabled (tool off).
         """
         try:
-            # Skip "enabled" so we don't send two messages (enabled then start) for one user action
-            if event_type == "enabled":
-                return
-            
             # Parse NEMO message format:
             # {"event": "tool_usage_start", "usage_id": 232, "user_id": 1, 
             #  "user_name": "Alex Denton (admin)", "tool_id": 1, "tool_name": "woollam",
@@ -527,24 +549,38 @@ class NEMOToolServer:
                 user_display_name = first_name[:self.config['max_name_length']]
                 logger.debug(f"Name too long, trimmed to: '{user_display_name}'")
             
-            # Map NEMO event types to ESP32 vocabulary (ESP32 expects active / idle / disabled only)
-            # start = someone using tool -> active; end = session over -> idle; disabled = tool off
+            # If NEMO doesn't include a user_name on state-only events, prefer the last known user.
+            if not user_display_name and tool_id is not None:
+                user_display_name = self.last_users.get(str(tool_id), "")
+
+            # Map NEMO event types to a consistent vocabulary.
+            # start = someone using tool -> active; end/enabled/idle = tool available -> enabled; disabled = tool off
             ESP32_ACTIVE = "active"
-            ESP32_IDLE = "idle"
+            ESP32_ENABLED = "enabled"
             ESP32_DISABLED = "disabled"
             if event_type == "start":
                 esp32_event = ESP32_ACTIVE
-            elif event_type == "end":
-                esp32_event = ESP32_IDLE
+            elif event_type in ("end", "enabled", "idle"):
+                esp32_event = ESP32_ENABLED
             elif event_type == "disabled":
                 esp32_event = ESP32_DISABLED
             else:
-                return  # only forward start, end, disabled
+                return  # only forward start/end/enabled/disabled
             
             # Format timestamp to readable format (Month Day, Hour:Minute AM/PM)
             formatted_time = "Unknown"
-            timestamp_field = "start_time" if event_type == "start" else "end_time"
-            timestamp_value = tool_data.get(timestamp_field)
+            timestamp_candidates = []
+            if event_type == "start":
+                timestamp_candidates = ["start_time", "timestamp"]
+            elif event_type == "end":
+                timestamp_candidates = ["end_time", "timestamp"]
+            elif event_type in ("enabled", "disabled", "idle"):
+                timestamp_candidates = ["timestamp", "enabled_at", "disabled_at", "updated_at"]
+            timestamp_value = None
+            for key in timestamp_candidates:
+                if tool_data.get(key):
+                    timestamp_value = tool_data.get(key)
+                    break
             
             if timestamp_value:
                 try:
@@ -566,6 +602,7 @@ class NEMOToolServer:
             # Create minimal message for ESP32 - only fields the display uses (config.h: active/idle/disabled)
             esp32_message = {
                 "event_type": esp32_event,
+                "in_use": esp32_event == ESP32_ACTIVE,
                 "timestamp": formatted_time,
                 "time_label": time_label,
                 "user_label": user_label,

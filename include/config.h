@@ -72,6 +72,9 @@
 #ifndef STATUS_ACTIVE
 #define STATUS_ACTIVE "active"
 #endif
+#ifndef STATUS_ENABLED
+#define STATUS_ENABLED "enabled"
+#endif
 #ifndef STATUS_IDLE
 #define STATUS_IDLE "idle"
 #endif
