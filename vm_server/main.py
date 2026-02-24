@@ -17,14 +17,6 @@ from typing import Dict, List, Optional
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 from config_parser import get_mqtt_ports, get_esp32_port, get_nemo_port, get_mqtt_broker
-from download_tools import generate_from_api
-
-# Optional YAML import - only needed if tool_mappings.yaml exists
-try:
-    import yaml
-    YAML_AVAILABLE = True
-except ImportError:
-    YAML_AVAILABLE = False
 
 # Load environment variables
 load_dotenv('config.env')
@@ -108,62 +100,13 @@ class NEMOToolServer:
         
         # MQTT broker defaults to localhost (Mosquitto runs on same VM)
         logger.info(f"MQTT broker: {self.config['mqtt_broker']}")
-        
-        # TOOL MAPPING SYSTEM - COMMENTED OUT (NEMO sends tool names directly in topics)
-        # We now use the tool name directly from the MQTT topic instead of looking up mappings
-        # # Load tool ID to name mappings from YAML file
-        # self.tool_id_to_name = self.load_tool_mappings()
-        # logger.info(f"Tool mappings loaded: {len(self.tool_id_to_name)} tools configured")
-        # 
-        # # Create reverse mapping: tool_name -> tool_id
-        # self.tool_name_to_id = {name: id for id, name in self.tool_id_to_name.items()}
-        
+
         # Track last users for each tool (keyed by tool_id)
         self.last_users = {}  # tool_id (str) -> user_name
         
         self.mqtt_client_nemo = None  # Client for receiving from NEMO on port 1886
         self.mqtt_client_esp32 = None  # Client for publishing to ESP32s on port 1883
         self.running = False
-    
-    # TOOL MAPPING SYSTEM - COMMENTED OUT (NEMO sends tool names directly in topics)
-    # def load_tool_mappings(self) -> Dict[str, str]:
-    #     """Load tool ID to name mappings from YAML file"""
-    #     mappings_file = 'tool_mappings.yaml'
-    #     
-    #     # Check if YAML is available
-    #     if not YAML_AVAILABLE:
-    #         logger.error("PyYAML not available. Please install it: pip install PyYAML")
-    #         raise ImportError("PyYAML is required for tool mappings")
-    #     
-    #     # Check if mappings file exists
-    #     if not os.path.exists(mappings_file):
-    #         logger.error(f"Tool mappings file {mappings_file} not found!")
-    #         logger.error("Please create the tool_mappings.yaml file with your tool mappings.")
-    #         raise FileNotFoundError(f"Tool mappings file {mappings_file} not found")
-    #     
-    #     try:
-    #         with open(mappings_file, 'r') as file:
-    #             mappings = yaml.safe_load(file)
-    #             
-    #             if not mappings:
-    #                 logger.error(f"Tool mappings file {mappings_file} is empty or invalid")
-    #                 raise ValueError("Empty or invalid tool mappings file")
-    #             
-    #             logger.info(f"Loaded {len(mappings)} tool mappings from {mappings_file}")
-    #             
-    #             # Convert all keys to strings to ensure consistent lookup
-    #             string_mappings = {str(k): v for k, v in mappings.items()}
-    #             
-    #             # Log the mappings for debugging (only in DEBUG mode)
-    #             if logger.level <= logging.DEBUG:
-    #                 for tool_id, tool_name in string_mappings.items():
-    #                     logger.debug(f"Mapped tool ID {tool_id} to tool name '{tool_name}'")
-    #             
-    #             return string_mappings
-    #             
-    #     except Exception as e:
-    #         logger.error(f"Error loading tool mappings from {mappings_file}: {e}")
-    #         raise
 
     async def init_mqtt(self):
         """Initialize MQTT clients: one for receiving from NEMO (1886), one for publishing to ESP32s (1883)"""
@@ -643,11 +586,6 @@ class NEMOToolServer:
         """Start the server"""
         logger.info("Starting NEMO Tool Display Server")
         try:
-            # (REMOVED) Validate tool mappings before starting - not needed anymore
-            # if not self.tool_id_to_name:
-            #     logger.error("No tool mappings found! Please check tool_mappings.yaml")
-            #     return
-            
             await self.init_mqtt()
             
             self.running = True
@@ -686,45 +624,19 @@ class NEMOToolServer:
 
 def validate_environment():
     """Validate that all required files and dependencies are present"""
-    required_files = ['config.env', 'tool_mappings.yaml']
-    missing_files = []
-    
-    for file in required_files:
-        if not os.path.exists(file):
-            missing_files.append(file)
-    
+    required_files = ['config.env']
+    missing_files = [f for f in required_files if not os.path.exists(f)]
     if missing_files:
         logger.error(f"Missing required files: {', '.join(missing_files)}")
         logger.error("Please ensure all required files are present before starting the server")
         return False
-    
-    # Check if YAML is available
-    if not YAML_AVAILABLE:
-        logger.error("PyYAML not available. Please install it: pip install PyYAML")
-        return False
-    
     return True
 
 
 async def main():
     """Main entry point"""
     logger.info("NEMO Tool Display Server - Starting up")
-    
-    # Generate or refresh tool mappings from NEMO API when endpoint and token are configured
-    nemo_url = os.getenv('NEMO_API_URL')
-    nemo_token = os.getenv('NEMO_TOKEN')
-    if nemo_url and nemo_token and nemo_token != 'your_nemo_token_here':
-        logger.info("Generating tool mappings from NEMO API...")
-        if generate_from_api('tool_mappings.yaml'):
-            logger.info("Tool mappings updated successfully")
-        else:
-            logger.warning("Tool mapping generation failed; using existing tool_mappings.yaml if present")
-    elif not os.path.exists('tool_mappings.yaml'):
-        logger.warning(
-            "NEMO_API_URL and NEMO_TOKEN not set (or token placeholder). "
-            "Set them in config.env to auto-generate tool_mappings.yaml, or create the file manually."
-        )
-    
+
     # Validate environment before starting
     if not validate_environment():
         logger.error("Environment validation failed. Exiting.")

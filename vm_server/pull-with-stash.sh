@@ -26,6 +26,14 @@ echo "Stashing mosquitto config and data..."
 git stash push -m "mosquitto config before pull" -- vm_server/mqtt/config/mosquitto.conf vm_server/mqtt/data/mosquitto.db
 
 echo "Pulling latest from origin main..."
+git fetch origin main
+# Force-overwrite any untracked files that would block merge (take remote version; we only protect conf files)
+while IFS= read -r f; do
+  if [ -f "$f" ] && [ -n "$(git ls-files --others --exclude-standard -- "$f" 2>/dev/null)" ]; then
+    echo "Taking remote version: $f"
+    git checkout origin/main -- "$f"
+  fi
+done < <(git diff --name-only HEAD origin/main 2>/dev/null || true)
 git pull origin main
 
 echo "Restoring stashed mosquitto config..."

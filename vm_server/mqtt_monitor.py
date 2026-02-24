@@ -25,7 +25,7 @@ class ComprehensiveMQTTMonitor:
         
         # Read MQTT configuration from environment
         self.mqtt_broker = os.getenv('MQTT_BROKER', 'localhost')
-        self.mqtt_port = int(os.getenv('MQTT_PORT', '1884'))
+        self.mqtt_port = int(os.getenv('MQTT_PORT', '1886'))
         self.mqtt_use_ssl = os.getenv('MQTT_USE_SSL', 'False').lower() in ('true', '1', 'yes', 'on')
         self.mqtt_username = os.getenv('MQTT_USERNAME', '')
         self.mqtt_password = os.getenv('MQTT_PASSWORD', '')

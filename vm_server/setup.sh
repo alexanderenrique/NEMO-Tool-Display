@@ -351,6 +351,46 @@ EOF
     display_ca_certificate
 }
 
+# Function to write config.env with TLS and port settings (create from example if missing)
+write_config_env() {
+    local use_tls="$1"
+    local config_env="$SCRIPT_DIR/config.env"
+    local example="$SCRIPT_DIR/config.env.example"
+    
+    if [ ! -f "$config_env" ] && [ -f "$example" ]; then
+        print_info "Creating config.env from config.env.example..."
+        cp "$example" "$config_env"
+    fi
+    
+    if [ -f "$config_env" ]; then
+        if [ "$use_tls" = "true" ]; then
+            _set_config_env_value "MQTT_USE_SSL" "true" "$config_env"
+            _set_config_env_value "MQTT_PORT" "8883" "$config_env"
+            print_info "config.env: MQTT_USE_SSL=true, MQTT_PORT=8883 (TLS)"
+        else
+            _set_config_env_value "MQTT_USE_SSL" "false" "$config_env"
+            _set_config_env_value "MQTT_PORT" "1886" "$config_env"
+            print_info "config.env: MQTT_USE_SSL=false, MQTT_PORT=1886 (non-TLS)"
+        fi
+    fi
+}
+
+# Helper: set or replace KEY=VALUE in config file (portable)
+_set_config_env_value() {
+    local key="$1"
+    local value="$2"
+    local file="$3"
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        if [[ "$(uname)" = "Darwin" ]]; then
+            sed -i '' "s|^${key}=.*|${key}=${value}|" "$file"
+        else
+            sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+        fi
+    else
+        echo "${key}=${value}" >> "$file"
+    fi
+}
+
 # Function to create Mosquitto configuration
 create_mosquitto_config() {
     print_header "Creating Mosquitto Configuration"
@@ -642,9 +682,18 @@ display_vm_ip() {
     echo -e "${CYAN}VM IP Address:${NC} ${YELLOW}$vm_ip${NC}"
     echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
     echo ""
+    # Show port from config.env if set (8883 for TLS, 1886 for non-TLS)
+    local mqtt_port="1886"
+    local port_label="(non-TLS)"
+    if [ -f "$SCRIPT_DIR/config.env" ]; then
+        mqtt_port=$(grep -E '^MQTT_PORT=' "$SCRIPT_DIR/config.env" 2>/dev/null | cut -d= -f2 | tr -d '\r' || echo "1886")
+        if grep -qE '^MQTT_USE_SSL=(true|1|yes|on)$' "$SCRIPT_DIR/config.env" 2>/dev/null; then
+            port_label="(TLS)"
+        fi
+    fi
     print_info "Copy the IP address above and configure it in your NEMO backend:"
     echo "  - MQTT Broker Host: $vm_ip"
-    echo "  - MQTT Port: $(python3 -c "from config_parser import get_nemo_port; print(get_nemo_port())" 2>/dev/null || echo "1886") (non-TLS) or 8883 (TLS)"
+    echo "  - MQTT Port: ${mqtt_port} ${port_label}"
     echo ""
 }
 
@@ -675,14 +724,15 @@ main() {
     echo ""
     print_header "SSL/TLS Configuration"
     
+    USE_TLS_RESULT=false
     if check_existing_certificates; then
         print_success "SSL certificates already exist!"
         print_info "Found existing certificates in mqtt/certs/"
         echo ""
         echo "Choose an option:"
-        echo "  1) Use existing SSL certificates"
+        echo "  1) Use existing SSL certificates (TLS on port 8883)"
         echo "  2) Regenerate certificates with enhanced Key Usage extensions"
-        echo "  3) Skip SSL/TLS setup"
+        echo "  3) Skip SSL/TLS setup (non-TLS on port 1886)"
         echo ""
         read -p "Enter your choice (1-3): " -n 1 -r
         echo ""
@@ -692,7 +742,8 @@ main() {
                 print_info "Using existing SSL certificates."
                 display_ca_certificate
                 echo ""
-                print_info "SSL/TLS will be enabled for MQTT communication."
+                print_info "SSL/TLS will be enabled for MQTT communication (port 8883)."
+                USE_TLS_RESULT=true
                 echo ""
                 ;;
             2)
@@ -701,15 +752,17 @@ main() {
                 setup_ssl_certificates
                 echo ""
                 print_info "SSL/TLS setup completed with enhanced Key Usage extensions."
+                USE_TLS_RESULT=true
                 echo ""
                 ;;
             *)
-                print_info "Skipping SSL/TLS setup. MQTT will use unencrypted connections."
+                print_info "Skipping SSL/TLS setup. MQTT will use unencrypted connections (port 1886)."
+                USE_TLS_RESULT=false
                 ;;
         esac
     else
         echo "Do you want to enable SSL/TLS for secure MQTT communication?"
-        echo "This will generate certificates that can be used with NEMO."
+        echo "This will generate certificates; NEMO will connect on port 8883 (default for TLS)."
         echo ""
         read -p "Enable SSL/TLS? (y/N): " -n 1 -r
         echo ""
@@ -717,22 +770,20 @@ main() {
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             setup_ssl_certificates
             echo ""
-            print_info "SSL/TLS setup completed. Make sure to configure NEMO with the CA certificate shown above."
+            print_info "SSL/TLS setup completed. Make sure to configure NEMO with the CA certificate shown above (port 8883)."
+            USE_TLS_RESULT=true
             echo ""
         else
-            print_info "Skipping SSL/TLS setup. MQTT will use unencrypted connections."
+            print_info "Skipping SSL/TLS setup. MQTT will use unencrypted connections (port 1886)."
+            USE_TLS_RESULT=false
         fi
     fi
     
+    # Write config.env so the NEMO server uses TLS port 8883 when TLS is selected
+    write_config_env "$USE_TLS_RESULT"
+    
     # Create Mosquitto configuration
     create_mosquitto_config
-    
-    # Display CA certificate if SSL was enabled (so user can copy it)
-    if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
-        echo ""
-        display_ca_certificate
-        echo ""
-    fi
     
     # Display VM IP address for NEMO configuration (so user can copy it)
     display_vm_ip

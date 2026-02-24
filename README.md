@@ -13,7 +13,6 @@ cd vm_server
 The setup script will:
 - Install and configure Mosquitto MQTT broker
 - Set up Python virtual environment with dependencies
-- **Automatically generate tool mappings from NEMO API** (if token configured)
 - Configure SSL/TLS (optional)
 - Start MQTT broker and NEMO server
 
@@ -86,13 +85,7 @@ MQTT_PASSWORD=
 TIMEZONE_OFFSET_HOURS=-7
 MAX_NAME_LENGTH=13
 LOG_LEVEL=INFO
-
-# NEMO API Configuration
-NEMO_API_URL=https://nemo.stanford.edu/api/tools/
-NEMO_TOKEN=                        # Add your NEMO API token here
 ```
-
-**Important:** Add your actual NEMO API token to enable automatic tool mapping generation.
 
 ### ESP32 (platformio.ini)
 ```ini
@@ -110,32 +103,7 @@ build_flags =
 - **NEMO Port (1886)**: Used by VM server to receive messages from NEMO backend
 - **Configuration**: ESP32 port defined in `platformio.ini`, NEMO port defined in `config.env`
 
-## Tool Mapping System
-
-The system automatically generates tool mappings from the NEMO API:
-
-### Automatic Generation
-- Tool mappings are generated automatically when the VM server starts
-- Requires `NEMO_TOKEN` to be set in `config.env`
-- Fetches all tools from `https://nemo.stanford.edu/api/tools/`
-- Updates `tool_mappings.yaml` with current tool data
-
-### Manual Generation
-```bash
-cd vm_server
-source venv/bin/activate
-python generate_tool_mappings.py --api
-```
-
-### Tool Mapping Format
-The `tool_mappings.yaml` file maps NEMO tool IDs to display names:
-```yaml
-'1': aja-sputter
-'10': nanoscribe
-'11': form2-3d-printer
-'113': aja2-evap
-# ... (199+ tools)
-```
+Tool names are provided in MQTT messages from NEMO; no separate tool lookup or mapping file is required.
 
 ## MQTT Topics
 
@@ -233,11 +201,6 @@ The `tool_mappings.yaml` file maps NEMO tool IDs to display names:
 - Check logs: `tail -f vm_server/mqtt/log/mosquitto.log`
 - Verify ports 1883 and 1886 are not in use
 - Check Mosquitto configuration: `mosquitto -c mqtt/config/mosquitto.conf -v`
-
-**Tool mappings not updating:**
-- Verify `NEMO_TOKEN` is set in `config.env`
-- Check API connectivity: `curl -H "Authorization: Token YOUR_TOKEN" https://nemo.stanford.edu/api/tools/`
-- Run manual generation: `python generate_tool_mappings.py --api`
 
 **NEMO server issues:**
 - Check Python dependencies: `pip install -r requirements.txt`
@@ -358,9 +321,7 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 │   ├── test_system.py           # Comprehensive system tests
 │   ├── mqtt_monitor.py          # MQTT traffic monitor
 │   ├── config_parser.py         # Centralized config parser
-│   ├── generate_tool_mappings.py # Tool mapping generator
 │   ├── config.env              # Server configuration
-│   ├── tool_mappings.yaml      # Tool ID to name mappings
 │   ├── requirements.txt        # Python dependencies
 │   ├── mqtt/                   # MQTT broker files
 │   │   ├── config/mosquitto.conf
