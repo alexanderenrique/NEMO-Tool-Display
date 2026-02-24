@@ -305,6 +305,19 @@ EOF
     print_info "Generating server certificate request..."
     openssl req -new -key "$CERTS_DIR/server.key" -out "$CERTS_DIR/server.csr" -config "$CERTS_DIR/server.conf"
     
+    # Include this machine's IP in the server cert so NEMO can connect by IP (e.g. 171.67.89.14)
+    VM_IP=$(get_vm_ip)
+    ALT_NAMES="DNS.1 = localhost
+DNS.2 = *.local
+IP.1 = 127.0.0.1"
+    if [[ "$VM_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        ALT_NAMES="$ALT_NAMES
+IP.2 = $VM_IP"
+        print_info "Adding this machine's IP to certificate: $VM_IP"
+    else
+        print_warning "Could not detect this machine's IP ($VM_IP). NEMO must connect using 'localhost' or regenerate certs after fixing network."
+    fi
+    
     # Generate server certificate signed by CA with enhanced Key Usage
     print_info "Generating server certificate with Key Usage extensions..."
     openssl x509 -req -in "$CERTS_DIR/server.csr" -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" \
@@ -331,10 +344,7 @@ subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid:always,issuer
 
 [alt_names]
-DNS.1 = localhost
-DNS.2 = *.local
-IP.1 = 127.0.0.1
-IP.2 = 192.168.2.108
+$ALT_NAMES
 EOF
 )
     
