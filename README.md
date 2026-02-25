@@ -13,7 +13,7 @@ cd vm_server
 The setup script will:
 - Install and configure Mosquitto MQTT broker
 - Set up Python virtual environment with dependencies
-- Configure SSL/TLS (optional)
+- Generate an HMAC key for MQTT (no username/password required)
 - Start MQTT broker and NEMO server
 
 ### 2. ESP32 Configuration
@@ -165,15 +165,13 @@ Tool names are provided in MQTT messages from NEMO; no separate tool lookup or m
 6. **Test Configuration** - Verify MQTT functionality
 7. **Set Up Python Environment** - Create venv and install dependencies
 8. **Generate Tool Mappings** - Fetch tools from NEMO API
-9. **Configure SSL Settings** - Optional SSL/TLS setup
-10. **Set Up Environment File** - Create/update configuration
-11. **Update Mosquitto for SSL** - Add SSL configuration if enabled
-12. **Start MQTT Broker** - Launch Mosquitto
-13. **Start NEMO Server** - Launch Python application
+9. **Set Up Environment File** - Create config.env and generate HMAC key
+10. **Start MQTT Broker** - Launch Mosquitto
+11. **Start NEMO Server** - Launch Python application
 
 ### ESP32 Setup Steps
 1. **Configure WiFi** - Set SSID and password in `platformio.ini`
-2. **Configure MQTT** - Set broker IP, port, and SSL settings
+2. **Configure MQTT** - Set broker IP and port in `platformio.ini`
 3. **Set Tool Name** - Specify which tool this display shows
 4. **Upload Firmware** - Compile and flash to ESP32
 
@@ -189,7 +187,7 @@ Tool names are provided in MQTT messages from NEMO; no separate tool lookup or m
 - Verify MQTT broker IP address in `platformio.ini`
 - Check MQTT port (1883 for ESP32, 1886 for NEMO backend)
 - Ensure ESP32 and server are on same network
-- Check SSL settings match between ESP32 and server
+- Check MQTT broker IP and port match the server
 
 **Display not working:**
 - Check wiring connections (see Hardware Connections)
@@ -241,7 +239,7 @@ cd vm_server
 
 **What it does:**
 1. Stops all existing MQTT broker and server processes
-2. Clears MQTT ports (1883, 1886, 8883, 9001)
+2. Clears MQTT ports (1883, 1886, 9001)
 3. Starts Mosquitto MQTT broker on both ports
 4. Starts the NEMO server (vm_server/main.py)
 
@@ -267,7 +265,7 @@ python3 mqtt_monitor.py
 ```
 
 **Features:**
-- Monitors all MQTT ports (1883, 1886, 8883)
+- Monitors MQTT ports (1883 and NEMO port from config)
 - Shows message direction and content
 - Displays connection status
 - Real-time traffic analysis
@@ -358,8 +356,7 @@ mosquitto_sub -h localhost -t "nemo/test" -v
    - Rotate tokens regularly
 
 4. **MQTT Security:**
-   - Consider enabling SSL/TLS for production deployments
-   - Use authentication if possible
+   - Use the generated HMAC key for NEMO backend authentication
    - Restrict broker access with firewall rules
 
 5. **Network Security:**
