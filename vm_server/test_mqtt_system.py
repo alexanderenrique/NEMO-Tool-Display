@@ -7,7 +7,6 @@ Tests the MQTT broker and message forwarding functionality
 import json
 import time
 import paho.mqtt.client as mqtt
-import ssl
 import os
 from dotenv import load_dotenv
 
@@ -16,8 +15,7 @@ load_dotenv()
 class MQTTTester:
     def __init__(self):
         self.broker = os.getenv('MQTT_BROKER', 'localhost')
-        self.port = int(os.getenv('MQTT_PORT', '8883'))
-        self.use_ssl = os.getenv('MQTT_USE_SSL', 'true').lower() == 'true'
+        self.port = int(os.getenv('MQTT_PORT', '1886'))
         self.username = os.getenv('MQTT_USERNAME', '')
         self.password = os.getenv('MQTT_PASSWORD', '')
         
@@ -48,15 +46,8 @@ class MQTTTester:
     
     def connect(self):
         self.client = mqtt.Client()
-        
         if self.username and self.password:
             self.client.username_pw_set(self.username, self.password)
-        
-        if self.use_ssl:
-            self.client.tls_set(ca_certs=None, certfile=None, keyfile=None,
-                              cert_reqs=ssl.CERT_NONE, tls_version=ssl.PROTOCOL_TLS)
-            self.client.tls_insecure_set(True)  # For testing with self-signed certs
-        
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect

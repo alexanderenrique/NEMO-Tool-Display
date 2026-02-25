@@ -30,7 +30,7 @@ def load_config():
     # MQTT_BROKER defaults to localhost since Mosquitto runs on the same VM
     # Note: NEMO backend needs to know the VM's IP address (e.g., 10.0.0.31) to connect to Mosquitto
     config['mqtt_broker'] = os.getenv('MQTT_BROKER', 'localhost')
-    config['mqtt_use_ssl'] = os.getenv('MQTT_USE_SSL', 'false').lower() == 'true'
+    config['mqtt_hmac_key'] = os.getenv('MQTT_HMAC_KEY', '')
     config['mqtt_username'] = os.getenv('MQTT_USERNAME', '')
     config['mqtt_password'] = os.getenv('MQTT_PASSWORD', '')
     
@@ -115,27 +115,8 @@ class NEMOToolServer:
         import time
         unique_id = f"nemo_receiver_{int(time.time())}"
         self.mqtt_client_nemo = mqtt.Client(client_id=unique_id)
-        
         if self.config['mqtt_username'] and self.config['mqtt_password']:
             self.mqtt_client_nemo.username_pw_set(self.config['mqtt_username'], self.config['mqtt_password'])
-        
-        # Configure SSL if enabled
-        if self.config['mqtt_use_ssl']:
-            import ssl
-            # Use the actual CA certificate for proper SSL connection
-            ca_cert_path = "mqtt/certs/ca.crt"
-            if os.path.exists(ca_cert_path):
-                self.mqtt_client_nemo.tls_set(ca_certs=ca_cert_path, certfile=None, keyfile=None, 
-                                       cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLS, 
-                                       ciphers=None)
-                logger.info(f"NEMO Client: Using SSL with CA certificate: {ca_cert_path}")
-            else:
-                # Fallback to insecure mode if CA cert not found
-                self.mqtt_client_nemo.tls_set(ca_certs=None, certfile=None, keyfile=None, 
-                                       cert_reqs=ssl.CERT_NONE, tls_version=ssl.PROTOCOL_TLS, 
-                                       ciphers=None)
-                self.mqtt_client_nemo.tls_insecure_set(True)
-                logger.warning("NEMO Client: CA certificate not found, using insecure SSL mode")
         
         self.mqtt_client_nemo.on_connect = self.on_mqtt_connect_nemo
         self.mqtt_client_nemo.on_disconnect = self.on_mqtt_disconnect_nemo
@@ -149,7 +130,6 @@ class NEMOToolServer:
         import time
         unique_id = f"esp32_publisher_{int(time.time())}"
         self.mqtt_client_esp32 = mqtt.Client(client_id=unique_id)
-        
         if self.config['mqtt_username'] and self.config['mqtt_password']:
             self.mqtt_client_esp32.username_pw_set(self.config['mqtt_username'], self.config['mqtt_password'])
         
@@ -161,10 +141,8 @@ class NEMOToolServer:
         self.mqtt_client_esp32.keepalive = 60
         
         try:
-            # Connect NEMO client to port 1886 (non-TLS) or 8883 (TLS)
-            protocol = "mqtts" if self.config['mqtt_use_ssl'] else "mqtt"
-            nemo_port = 8883 if self.config['mqtt_use_ssl'] else get_nemo_port()
-            logger.info(f"Connecting NEMO client to {protocol}://{self.config['mqtt_broker']}:{nemo_port}")
+            nemo_port = get_nemo_port()
+            logger.info(f"Connecting NEMO client to mqtt://{self.config['mqtt_broker']}:{nemo_port}")
             self.mqtt_client_nemo.connect(self.config['mqtt_broker'], nemo_port, 60)
             self.mqtt_client_nemo.loop_start()
             
@@ -299,16 +277,8 @@ class NEMOToolServer:
                 port_1883_listening = self.check_port_listening(esp32_port)
                 port_1886_listening = self.check_port_listening(nemo_port)
                 
-                # Only require SSL port when TLS is enabled in config (avoids false warnings when testing without TLS)
-                ssl_required = self.config.get("mqtt_use_ssl", False)
-                ssl_ok = (
-                    self.check_port_listening(8883)
-                    if (ssl_required and os.path.exists("mqtt/certs/ca.crt"))
-                    else True
-                )
-                
                 # Only log if there are issues
-                if not nemo_connected or not esp32_connected or not port_1883_listening or not port_1886_listening or not ssl_ok:
+                if not nemo_connected or not esp32_connected or not port_1883_listening or not port_1886_listening:
                     nemo_ok = "connected" if nemo_connected else "disconnected"
                     esp32_ok = "connected" if esp32_connected else "disconnected"
                     logger.warning(f"⚠️ NEMO (1886): {nemo_ok} | ESP32 (1883): {esp32_ok} | Ports 1883/1886: {'open' if port_1883_listening and port_1886_listening else 'check'}")
@@ -368,25 +338,10 @@ class NEMOToolServer:
             port_1883_ok = self.check_port_listening(esp32_port)
             port_1886_ok = self.check_port_listening(nemo_port)
             
-            # Check SSL port if certificates exist
-            ssl_port_ok = False
-            ssl_message = ""
-            if os.path.exists("mqtt/certs/ca.crt"):
-                ssl_port_ok = self.check_port_listening(8883)
-                ssl_message = f", 8883 (SSL): {ssl_port_ok}"
-            
-            # Determine which ports to check
-            all_ports_ok = port_1883_ok and port_1886_ok
-            if os.path.exists("mqtt/certs/ca.crt"):
-                all_ports_ok = all_ports_ok and ssl_port_ok
-            
-            if all_ports_ok:
-                ports_list = f"{esp32_port}, {nemo_port}"
-                if os.path.exists("mqtt/certs/ca.crt"):
-                    ports_list += ", 8883 (SSL)"
-                logger.info(f"✅ Mosquitto restarted successfully - all ports are open ({ports_list})")
+            if port_1883_ok and port_1886_ok:
+                logger.info(f"✅ Mosquitto restarted successfully - all ports are open ({esp32_port}, {nemo_port})")
             else:
-                logger.error(f"❌ Mosquitto restart failed - Port {esp32_port}: {port_1883_ok}, Port {nemo_port}: {port_1886_ok}{ssl_message}")
+                logger.error(f"❌ Mosquitto restart failed - Port {esp32_port}: {port_1883_ok}, Port {nemo_port}: {port_1886_ok}")
                 
         except Exception as e:
             logger.error(f"❌ Failed to restart mosquitto: {e}")

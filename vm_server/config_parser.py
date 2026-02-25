@@ -82,11 +82,23 @@ def get_mqtt_ports():
     return config.get_mqtt_ports()
 
 def get_esp32_port():
-    """Get ESP32 MQTT port"""
+    """Get ESP32 MQTT port (env MQTT_PORT_ESP32 overrides config.h)"""
+    val = os.getenv('MQTT_PORT_ESP32')
+    if val is not None and str(val).strip() != '':
+        try:
+            return int(val)
+        except ValueError:
+            pass
     return config.get('MQTT_PORT_ESP32', 1883)
 
 def get_nemo_port():
-    """Get NEMO MQTT port"""
+    """Get NEMO MQTT port (env MQTT_PORT overrides config.h)"""
+    val = os.getenv('MQTT_PORT')
+    if val is not None and str(val).strip() != '':
+        try:
+            return int(val)
+        except ValueError:
+            pass
     return config.get('MQTT_PORT_NEMO', 1886)
 
 def get_mqtt_broker():

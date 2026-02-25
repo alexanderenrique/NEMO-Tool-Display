@@ -148,8 +148,10 @@ stop_existing_processes() {
         sudo systemctl stop mosquitto 2>/dev/null || true
     fi
     
-    # Clean up ports - kill anything using our ports
-    for port in 1883 1886 8883 9001; do
+    # Clean up ports - kill anything using our ports (read from config if available)
+    ESP32_PORT=$(_get_esp32_port)
+    NEMO_PORT=$(_get_nemo_port)
+    for port in $ESP32_PORT $NEMO_PORT 9001; do
         if lsof -ti :$port >/dev/null 2>&1; then
             print_info "Clearing port $port..."
             lsof -ti :$port | xargs kill -9 2>/dev/null || true
@@ -160,7 +162,7 @@ stop_existing_processes() {
     
     # Verify ports are free
     ports_free=true
-    for port in 1883 1886; do
+    for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
             print_warning "Port $port is still in use after cleanup attempt"
             ports_free=false
@@ -192,178 +194,8 @@ setup_python_environment() {
     print_success "Python environment ready"
 }
 
-# Function to check for existing SSL certificates
-check_existing_certificates() {
-    CERTS_DIR="$SCRIPT_DIR/mqtt/certs"
-    
-    if [ -f "$CERTS_DIR/ca.crt" ] && [ -f "$CERTS_DIR/server.crt" ] && [ -f "$CERTS_DIR/server.key" ]; then
-        return 0  # All certificates exist
-    else
-        return 1  # Some certificates are missing
-    fi
-}
-
-# Function to clean up old certificates
-cleanup_old_certificates() {
-    CERTS_DIR="$SCRIPT_DIR/mqtt/certs"
-    
-    print_info "Cleaning up old certificates..."
-    
-    # Remove old certificate files
-    rm -f "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" "$CERTS_DIR/server.crt" "$CERTS_DIR/server.key" "$CERTS_DIR/ca.srl"
-    
-    print_success "Old certificates cleaned up"
-}
-
-# Function to display existing CA certificate
-display_ca_certificate() {
-    CERTS_DIR="$SCRIPT_DIR/mqtt/certs"
-    
-    print_header "CA Certificate for NEMO Configuration"
-    echo "Copy the following CA certificate content to your NEMO system:"
-    echo ""
-    echo "----------------------------------------"
-    cat "$CERTS_DIR/ca.crt"
-    echo ""
-    echo "----------------------------------------"
-    echo ""
-    print_info "Save this certificate content to a file (e.g., nemo-ca.crt) on your NEMO system"
-    print_info "Configure NEMO to use this CA certificate for MQTT SSL connections"
-}
-
-# Function to setup SSL certificates
-setup_ssl_certificates() {
-    print_header "Setting up SSL Certificates"
-    
-    # Create certs directory
-    CERTS_DIR="$SCRIPT_DIR/mqtt/certs"
-    mkdir -p "$CERTS_DIR"
-    
-    # Check if certificates already exist
-    if check_existing_certificates; then
-        print_success "SSL certificates already exist!"
-        print_info "Certificate files found:"
-        print_info "  - CA Certificate: $CERTS_DIR/ca.crt"
-        print_info "  - Server Certificate: $CERTS_DIR/server.crt"
-        print_info "  - Server Private Key: $CERTS_DIR/server.key"
-        echo ""
-        
-        # Ask if user wants to regenerate
-        echo "Do you want to regenerate the SSL certificates?"
-        echo "This will overwrite the existing certificates."
-        echo ""
-        read -p "Regenerate certificates? (y/N): " -n 1 -r
-        echo ""
-        
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Using existing SSL certificates."
-            display_ca_certificate
-            return 0
-        else
-            print_info "Regenerating SSL certificates..."
-            cleanup_old_certificates
-        fi
-    else
-        print_info "Generating new SSL certificates for secure MQTT communication..."
-    fi
-    
-    # Generate CA private key
-    print_info "Generating CA private key..."
-    openssl genrsa -out "$CERTS_DIR/ca.key" 2048
-    
-    # Generate CA certificate with Key Usage extensions
-    print_info "Generating CA certificate with Key Usage extensions..."
-    openssl req -new -x509 -days 365 -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" \
-        -subj "/C=US/ST=CA/L=Stanford/O=NEMO/OU=ToolDisplay/CN=NEMO-CA" \
-        -extensions v3_ca -config <(cat <<EOF
-[req]
-distinguished_name = req_distinguished_name
-req_extensions = v3_ca
-prompt = no
-
-[req_distinguished_name]
-C=US
-ST=CA
-L=Stanford
-O=NEMO
-OU=ToolDisplay
-CN=NEMO-CA
-
-[v3_ca]
-basicConstraints = critical,CA:TRUE
-keyUsage = critical,keyCertSign,cRLSign
-subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid:always,issuer
-EOF
-)
-    
-    # Generate server private key
-    print_info "Generating server private key..."
-    openssl genrsa -out "$CERTS_DIR/server.key" 2048
-    
-    # Generate server certificate request
-    print_info "Generating server certificate request..."
-    openssl req -new -key "$CERTS_DIR/server.key" -out "$CERTS_DIR/server.csr" -config "$CERTS_DIR/server.conf"
-    
-    # Include this machine's IP in the server cert so NEMO can connect by IP (e.g. 171.67.89.14)
-    VM_IP=$(get_vm_ip)
-    ALT_NAMES="DNS.1 = localhost
-DNS.2 = *.local
-IP.1 = 127.0.0.1"
-    if [[ "$VM_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        ALT_NAMES="$ALT_NAMES
-IP.2 = $VM_IP"
-        print_info "Adding this machine's IP to certificate: $VM_IP"
-    else
-        print_warning "Could not detect this machine's IP ($VM_IP). NEMO must connect using 'localhost' or regenerate certs after fixing network."
-    fi
-    
-    # Generate server certificate signed by CA with enhanced Key Usage
-    print_info "Generating server certificate with Key Usage extensions..."
-    openssl x509 -req -in "$CERTS_DIR/server.csr" -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" \
-        -CAcreateserial -out "$CERTS_DIR/server.crt" -days 365 -extensions v3_req -extfile <(cat <<EOF
-[req]
-distinguished_name = req_distinguished_name
-req_extensions = v3_req
-prompt = no
-
-[req_distinguished_name]
-C=US
-ST=CA
-L=Stanford
-O=NEMO
-OU=ToolDisplay
-CN=localhost
-
-[v3_req]
-basicConstraints = CA:FALSE
-keyUsage = critical,digitalSignature,keyEncipherment
-extendedKeyUsage = serverAuth,clientAuth
-subjectAltName = @alt_names
-subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid:always,issuer
-
-[alt_names]
-$ALT_NAMES
-EOF
-)
-    
-    # Clean up CSR file
-    rm "$CERTS_DIR/server.csr"
-    
-    print_success "SSL certificates generated successfully!"
-    print_info "Certificate files created:"
-    print_info "  - CA Certificate: $CERTS_DIR/ca.crt"
-    print_info "  - Server Certificate: $CERTS_DIR/server.crt"
-    print_info "  - Server Private Key: $CERTS_DIR/server.key"
-    
-    # Display CA certificate for copying to NEMO
-    display_ca_certificate
-}
-
-# Function to write config.env with TLS and port settings (create from example if missing)
+# Function to generate HMAC key and write config.env (create from example if missing)
 write_config_env() {
-    local use_tls="$1"
     local config_env="$SCRIPT_DIR/config.env"
     local example="$SCRIPT_DIR/config.env.example"
     
@@ -373,16 +205,56 @@ write_config_env() {
     fi
     
     if [ -f "$config_env" ]; then
-        if [ "$use_tls" = "true" ]; then
-            _set_config_env_value "MQTT_USE_SSL" "true" "$config_env"
-            _set_config_env_value "MQTT_PORT" "8883" "$config_env"
-            print_info "config.env: MQTT_USE_SSL=true, MQTT_PORT=8883 (TLS)"
+        # Prompt for ports (defaults: ESP32=1883, NEMO=1886)
+        echo ""
+        read -p "ESP32 MQTT port [1883]: " esp32_port_input
+        esp32_port="${esp32_port_input:-1883}"
+        read -p "NEMO MQTT port [1886]: " nemo_port_input
+        nemo_port="${nemo_port_input:-1886}"
+        _set_config_env_value "MQTT_PORT_ESP32" "$esp32_port" "$config_env"
+        _set_config_env_value "MQTT_PORT" "$nemo_port" "$config_env"
+        print_success "Ports set: ESP32=$esp32_port, NEMO=$nemo_port"
+        # Generate HMAC key if not already set
+        if ! grep -qE '^MQTT_HMAC_KEY=.+$' "$config_env" 2>/dev/null; then
+            local hmac_key
+            hmac_key=$(openssl rand -hex 32)
+            _set_config_env_value "MQTT_HMAC_KEY" "$hmac_key" "$config_env"
+            print_success "Generated MQTT_HMAC_KEY (saved to config.env)"
+            echo ""
+            echo -e "  ${CYAN}MQTT_HMAC_KEY=${NC}${YELLOW}$hmac_key${NC}"
+            echo ""
+            print_info "Share this key with your NEMO backend for authenticated MQTT (keep it secret)."
         else
-            _set_config_env_value "MQTT_USE_SSL" "false" "$config_env"
-            _set_config_env_value "MQTT_PORT" "1886" "$config_env"
-            print_info "config.env: MQTT_USE_SSL=false, MQTT_PORT=1886 (non-TLS)"
+            print_info "config.env: MQTT_HMAC_KEY already set"
+            hmac_key=$(grep -E '^MQTT_HMAC_KEY=' "$config_env" 2>/dev/null | cut -d= -f2- | tr -d '\r')
+            if [ -n "$hmac_key" ]; then
+                echo ""
+                echo -e "  ${CYAN}MQTT_HMAC_KEY=${NC}${YELLOW}$hmac_key${NC}"
+                echo ""
+            fi
         fi
+        print_info "config.env: MQTT_PORT_ESP32=$esp32_port, MQTT_PORT=$nemo_port"
     fi
+}
+
+# Read ESP32 and NEMO ports from config.env (defaults if file or keys missing)
+_get_esp32_port() {
+    local config_env="$SCRIPT_DIR/config.env"
+    if [ -f "$config_env" ]; then
+        local p
+        p=$(grep -E '^MQTT_PORT_ESP32=' "$config_env" 2>/dev/null | cut -d= -f2- | tr -d '\r' | head -1)
+        [ -n "$p" ] && echo "$p" && return
+    fi
+    echo "1883"
+}
+_get_nemo_port() {
+    local config_env="$SCRIPT_DIR/config.env"
+    if [ -f "$config_env" ]; then
+        local p
+        p=$(grep -E '^MQTT_PORT=' "$config_env" 2>/dev/null | cut -d= -f2- | tr -d '\r' | head -1)
+        [ -n "$p" ] && echo "$p" && return
+    fi
+    echo "1886"
 }
 
 # Helper: set or replace KEY=VALUE in config file (portable)
@@ -401,6 +273,89 @@ _set_config_env_value() {
     fi
 }
 
+# Helper: set MQTT_USERNAME or MQTT_PASSWORD in config.env (value may contain special chars)
+_set_config_env_password_line() {
+    local key="$1"
+    local value="$2"
+    local file="$3"
+    if [ ! -f "$file" ]; then
+        return 1
+    fi
+    # Remove existing line and append new one (avoids sed escaping issues)
+    grep -v "^${key}=" "$file" > "${file}.tmp" 2>/dev/null || true
+    # Escape double-quotes in value for safe echo
+    printf '%s=%s\n' "$key" "$value" >> "${file}.tmp"
+    mv "${file}.tmp" "$file"
+}
+
+# Function to set up broker authentication (username/password stored in Mosquitto passwd file)
+setup_broker_auth() {
+    local config_env="$SCRIPT_DIR/config.env"
+    local passwd_file="$MQTT_CONFIG_DIR/passwd"
+    
+    echo ""
+    print_header "MQTT Broker Authentication"
+    echo "You can require a username and password to connect to the MQTT broker."
+    echo "Credentials are stored in a hashed password file on the broker."
+    echo ""
+    read -p "Enable MQTT broker authentication? (y/N): " -n 1 -r
+    echo ""
+    
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Broker authentication disabled (allow_anonymous)"
+        return 0
+    fi
+    
+    if ! command_exists mosquitto_passwd; then
+        print_error "mosquitto_passwd not found. Install mosquitto with password utility (e.g. mosquitto-clients)."
+        return 1
+    fi
+    
+    read -p "MQTT username: " mqtt_user
+    if [ -z "$mqtt_user" ]; then
+        print_error "Username cannot be empty"
+        return 1
+    fi
+    
+    read -s -p "MQTT password: " mqtt_pass
+    echo ""
+    read -s -p "Confirm password: " mqtt_pass2
+    echo ""
+    
+    if [ "$mqtt_pass" != "$mqtt_pass2" ]; then
+        print_error "Passwords do not match"
+        return 1
+    fi
+    
+    if [ -z "$mqtt_pass" ]; then
+        print_error "Password cannot be empty"
+        return 1
+    fi
+    
+    mkdir -p "$MQTT_CONFIG_DIR"
+    # -c creates new file (overwrites); -b batch mode (password on command line)
+    mosquitto_passwd -b -c "$passwd_file" "$mqtt_user" "$mqtt_pass"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create password file"
+        return 1
+    fi
+    
+    chmod 600 "$passwd_file"
+    print_success "Password file created: $passwd_file"
+    
+    # Store credentials in config.env so NEMO server and clients can connect
+    if [ -f "$config_env" ]; then
+        _set_config_env_password_line "MQTT_USERNAME" "$mqtt_user" "$config_env"
+        _set_config_env_password_line "MQTT_PASSWORD" "$mqtt_pass" "$config_env"
+        chmod 600 "$config_env" 2>/dev/null || true
+        print_success "Credentials written to config.env (used by NEMO server and monitor)"
+    fi
+    
+    # Clear from environment
+    unset mqtt_pass mqtt_pass2
+    print_info "Broker will use allow_anonymous false and password_file"
+}
+
 # Function to create Mosquitto configuration
 create_mosquitto_config() {
     print_header "Creating Mosquitto Configuration"
@@ -415,17 +370,17 @@ create_mosquitto_config() {
         chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
     fi
     
-    # Get ports from centralized config
-    ESP32_PORT=$(python3 -c "from config_parser import get_esp32_port; print(get_esp32_port())" 2>/dev/null || echo "1883")
-    NEMO_PORT=$(python3 -c "from config_parser import get_nemo_port; print(get_nemo_port())" 2>/dev/null || echo "1886")
+    # Get ports from config.env (set by write_config_env)
+    ESP32_PORT=$(_get_esp32_port)
+    NEMO_PORT=$(_get_nemo_port)
     
-    # Check if SSL is enabled
-    SSL_ENABLED=false
-    if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ] && [ -f "$SCRIPT_DIR/mqtt/certs/server.crt" ] && [ -f "$SCRIPT_DIR/mqtt/certs/server.key" ]; then
-        SSL_ENABLED=true
+    PASSWD_FILE="$MQTT_CONFIG_DIR/passwd"
+    USE_AUTH=false
+    if [ -f "$PASSWD_FILE" ]; then
+        USE_AUTH=true
     fi
     
-    # Create Mosquitto configuration
+    # Build config: general settings first
     cat > "$CONFIG_FILE" << EOF
 # Mosquitto MQTT Broker Configuration for NEMO Tool Display
 # Auto-generated by setup.sh
@@ -439,40 +394,49 @@ log_type warning
 log_type notice
 log_type information
 
+EOF
+    
+    # Add broker authentication when password file exists
+    if [ "$USE_AUTH" = true ]; then
+        cat >> "$CONFIG_FILE" << EOF
+# Broker authentication (hashed credentials in password file)
+allow_anonymous false
+password_file $PASSWD_FILE
+
+EOF
+    fi
+    
+    # Network listeners (inherit allow_anonymous from global if set)
+    cat >> "$CONFIG_FILE" << EOF
 # Network settings - ESP32 displays
 listener $ESP32_PORT 0.0.0.0
 protocol mqtt
-allow_anonymous true
+EOF
+    if [ "$USE_AUTH" = false ]; then
+        echo "allow_anonymous true" >> "$CONFIG_FILE"
+    fi
+    
+    cat >> "$CONFIG_FILE" << EOF
 
 # Network settings - NEMO backend
 listener $NEMO_PORT 0.0.0.0
 protocol mqtt
-allow_anonymous true
 EOF
-
-    # Add SSL configuration if certificates exist
-    if [ "$SSL_ENABLED" = true ]; then
-        cat >> "$CONFIG_FILE" << EOF
-
-# SSL/TLS listener for secure NEMO connections
-listener 8883 0.0.0.0
-protocol mqtt
-cafile $SCRIPT_DIR/mqtt/certs/ca.crt
-certfile $SCRIPT_DIR/mqtt/certs/server.crt
-keyfile $SCRIPT_DIR/mqtt/certs/server.key
-require_certificate false
-use_identity_as_username false
-allow_anonymous true
-EOF
-        print_info "SSL/TLS listener added on port 8883"
+    if [ "$USE_AUTH" = false ]; then
+        echo "allow_anonymous true" >> "$CONFIG_FILE"
     fi
-
+    
     cat >> "$CONFIG_FILE" << EOF
 
 # WebSocket support (optional)
 listener 9001 0.0.0.0
 protocol websockets
-allow_anonymous true
+EOF
+    if [ "$USE_AUTH" = false ]; then
+        echo "allow_anonymous true" >> "$CONFIG_FILE"
+    fi
+    
+    cat >> "$CONFIG_FILE" << EOF
 
 # Connection settings
 max_connections 100
@@ -486,8 +450,10 @@ EOF
 
     print_success "Mosquitto configuration created: $CONFIG_FILE"
     print_info "ESP32 port: $ESP32_PORT, NEMO port: $NEMO_PORT"
-    if [ "$SSL_ENABLED" = true ]; then
-        print_info "SSL/TLS port: 8883"
+    if [ "$USE_AUTH" = true ]; then
+        print_info "Broker authentication: enabled (password_file)"
+    else
+        print_info "Broker authentication: disabled (allow_anonymous)"
     fi
 }
 
@@ -510,9 +476,9 @@ start_services() {
         chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
     fi
     
-    # Check if ports are already in use and free them
-    ESP32_PORT=$(python3 -c "from config_parser import get_esp32_port; print(get_esp32_port())" 2>/dev/null || echo "1883")
-    NEMO_PORT=$(python3 -c "from config_parser import get_nemo_port; print(get_nemo_port())" 2>/dev/null || echo "1886")
+    # Get ports from config.env
+    ESP32_PORT=$(_get_esp32_port)
+    NEMO_PORT=$(_get_nemo_port)
     
     for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
@@ -598,30 +564,16 @@ show_status() {
         print_error "NEMO server: Not running"
     fi
     
-    # Check SSL certificates
-    if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ] && [ -f "$SCRIPT_DIR/mqtt/certs/server.crt" ] && [ -f "$SCRIPT_DIR/mqtt/certs/server.key" ]; then
-        print_success "SSL/TLS: Enabled (certificates present)"
-    else
-        print_info "SSL/TLS: Disabled (no certificates)"
-    fi
-    
-    # Check ports
-    for port in 1883 1886; do
+    # Check ports (from config.env)
+    ESP32_PORT=$(_get_esp32_port)
+    NEMO_PORT=$(_get_nemo_port)
+    for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -i :$port >/dev/null 2>&1; then
             print_success "Port $port: Listening"
         else
             print_error "Port $port: Not listening"
         fi
     done
-    
-    # Check SSL port if certificates exist
-    if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
-        if lsof -i :8883 >/dev/null 2>&1; then
-            print_success "Port 8883 (SSL): Listening"
-        else
-            print_error "Port 8883 (SSL): Not listening"
-        fi
-    fi
     
     echo ""
     print_info "Quick commands:"
@@ -692,18 +644,12 @@ display_vm_ip() {
     echo -e "${CYAN}VM IP Address:${NC} ${YELLOW}$vm_ip${NC}"
     echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
     echo ""
-    # Show port from config.env if set (8883 for TLS, 1886 for non-TLS)
-    local mqtt_port="1886"
-    local port_label="(non-TLS)"
-    if [ -f "$SCRIPT_DIR/config.env" ]; then
-        mqtt_port=$(grep -E '^MQTT_PORT=' "$SCRIPT_DIR/config.env" 2>/dev/null | cut -d= -f2 | tr -d '\r' || echo "1886")
-        if grep -qE '^MQTT_USE_SSL=(true|1|yes|on)$' "$SCRIPT_DIR/config.env" 2>/dev/null; then
-            port_label="(TLS)"
-        fi
-    fi
+    local nemo_port=$(_get_nemo_port)
+    local esp32_port=$(_get_esp32_port)
     print_info "Copy the IP address above and configure it in your NEMO backend:"
     echo "  - MQTT Broker Host: $vm_ip"
-    echo "  - MQTT Port: ${mqtt_port} ${port_label}"
+    echo "  - NEMO port: ${nemo_port}"
+    echo "  - ESP32 port: ${esp32_port}"
     echo ""
 }
 
@@ -713,8 +659,7 @@ main() {
     echo "This script will:"
     echo "  - Install Mosquitto MQTT broker"
     echo "  - Set up Python environment"
-    echo "  - Configure MQTT broker"
-    echo "  - Optionally set up SSL/TLS certificates"
+    echo "  - Generate HMAC key; optionally set broker username/password"
     echo "  - Start all services"
     echo ""
     
@@ -730,67 +675,13 @@ main() {
     # Setup Python environment
     setup_python_environment
     
-    # Check for existing SSL certificates and ask about SSL setup
+    # Generate HMAC key and write config.env
     echo ""
-    print_header "SSL/TLS Configuration"
+    print_header "Configuration"
+    write_config_env
     
-    USE_TLS_RESULT=false
-    if check_existing_certificates; then
-        print_success "SSL certificates already exist!"
-        print_info "Found existing certificates in mqtt/certs/"
-        echo ""
-        echo "Choose an option:"
-        echo "  1) Use existing SSL certificates (TLS on port 8883)"
-        echo "  2) Regenerate certificates with enhanced Key Usage extensions"
-        echo "  3) Skip SSL/TLS setup (non-TLS on port 1886)"
-        echo ""
-        read -p "Enter your choice (1-3): " -n 1 -r
-        echo ""
-        
-        case $REPLY in
-            1)
-                print_info "Using existing SSL certificates."
-                display_ca_certificate
-                echo ""
-                print_info "SSL/TLS will be enabled for MQTT communication (port 8883)."
-                USE_TLS_RESULT=true
-                echo ""
-                ;;
-            2)
-                print_info "Regenerating certificates with enhanced Key Usage extensions..."
-                cleanup_old_certificates
-                setup_ssl_certificates
-                echo ""
-                print_info "SSL/TLS setup completed with enhanced Key Usage extensions."
-                USE_TLS_RESULT=true
-                echo ""
-                ;;
-            *)
-                print_info "Skipping SSL/TLS setup. MQTT will use unencrypted connections (port 1886)."
-                USE_TLS_RESULT=false
-                ;;
-        esac
-    else
-        echo "Do you want to enable SSL/TLS for secure MQTT communication?"
-        echo "This will generate certificates; NEMO will connect on port 8883 (default for TLS)."
-        echo ""
-        read -p "Enable SSL/TLS? (y/N): " -n 1 -r
-        echo ""
-        
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            setup_ssl_certificates
-            echo ""
-            print_info "SSL/TLS setup completed. Make sure to configure NEMO with the CA certificate shown above (port 8883)."
-            USE_TLS_RESULT=true
-            echo ""
-        else
-            print_info "Skipping SSL/TLS setup. MQTT will use unencrypted connections (port 1886)."
-            USE_TLS_RESULT=false
-        fi
-    fi
-    
-    # Write config.env so the NEMO server uses TLS port 8883 when TLS is selected
-    write_config_env "$USE_TLS_RESULT"
+    # Optionally set up broker authentication (username/password in passwd file)
+    setup_broker_auth
     
     # Create Mosquitto configuration
     create_mosquitto_config
@@ -802,10 +693,8 @@ main() {
     echo ""
     print_header "Ready to Launch Services?"
     echo "Before starting the MQTT broker and NEMO server, make sure you have:"
-    if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
-        echo "  ✓ Copied the CA certificate (shown above)"
-    fi
     echo "  ✓ Copied the VM IP address (shown above)"
+    echo "  ✓ Noted MQTT_HMAC_KEY in config.env if you need it for NEMO"
     echo ""
     read -p "Ready to launch MQTT broker and NEMO server? (Y/n): " -n 1 -r
     echo ""

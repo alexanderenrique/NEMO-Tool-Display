@@ -27,8 +27,8 @@ fi
 
 # Set defaults if not defined in config.env
 MQTT_BROKER=${MQTT_BROKER:-"localhost"}
+MQTT_PORT_ESP32=${MQTT_PORT_ESP32:-"1883"}
 MQTT_PORT=${MQTT_PORT:-"1886"}
-MQTT_USE_SSL=${MQTT_USE_SSL:-"False"}
 
 # Function to print colored output
 print_header() {
@@ -55,20 +55,11 @@ print_warning() {
 
 # Function to get ports from config.env
 get_esp32_port() {
-    echo "1883"  # ESP32 port is always 1883
+    echo "${MQTT_PORT_ESP32:-1883}"
 }
 
 get_nemo_port() {
     echo "$MQTT_PORT"  # NEMO port from config.env
-}
-
-# Function to check if SSL is enabled
-is_ssl_enabled() {
-    if [[ "$MQTT_USE_SSL" =~ ^(true|True|TRUE|1|yes|Yes|YES|on|On|ON)$ ]]; then
-        return 0
-    else
-        return 1
-    fi
 }
 
 # Function to kill all NEMO processes
@@ -84,13 +75,7 @@ kill_all_processes() {
     esp32_port=$(get_esp32_port)
     nemo_port=$(get_nemo_port)
     
-    # Build port list based on configuration
-    ports_to_clear="$esp32_port $nemo_port 9001"
-    if is_ssl_enabled; then
-        ports_to_clear="$ports_to_clear 8883"
-    fi
-    
-    for port in $ports_to_clear; do
+    for port in $esp32_port $nemo_port 9001; do
         if lsof -ti :$port >/dev/null 2>&1; then
             lsof -ti :$port | xargs kill -9 2>/dev/null || true
         fi
@@ -155,18 +140,6 @@ show_status() {
         fi
     done
     
-    # Check SSL port if SSL is enabled and certificates exist
-    if is_ssl_enabled && [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
-        if lsof -i :8883 >/dev/null 2>&1; then
-            print_success "Port 8883 (SSL): Listening"
-        else
-            print_error "Port 8883 (SSL): Not listening"
-        fi
-    elif is_ssl_enabled && [ ! -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
-        print_info "Port 8883 (SSL): SSL enabled but no certificates found"
-    else
-        print_info "Port 8883 (SSL): SSL disabled in config"
-    fi
 }
 
 # Main execution
@@ -179,17 +152,7 @@ main() {
     # Display configuration
     print_info "Configuration loaded from config.env:"
     print_info "  MQTT_BROKER: $MQTT_BROKER"
-    print_info "  MQTT_PORT: $MQTT_PORT"
-    print_info "  MQTT_USE_SSL: $MQTT_USE_SSL"
-    if is_ssl_enabled; then
-        if [ -f "$SCRIPT_DIR/mqtt/certs/ca.crt" ]; then
-            print_info "  SSL Certificates: Found"
-        else
-            print_warning "  SSL Certificates: Missing (SSL enabled but no certs)"
-        fi
-    else
-        print_info "  SSL Certificates: Not needed (SSL disabled)"
-    fi
+    print_info "  MQTT_PORT_ESP32: $MQTT_PORT_ESP32, MQTT_PORT (NEMO): $MQTT_PORT"
     echo ""
     
     # Kill all processes
