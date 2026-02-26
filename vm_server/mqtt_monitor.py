@@ -197,6 +197,8 @@ class ComprehensiveMQTTMonitor:
         print("📋 Configuration loaded from config.env:")
         print(f"   MQTT_BROKER: {self.mqtt_broker}")
         print(f"   MQTT_PORT_ESP32: {self.mqtt_port_esp32}, MQTT_PORT (NEMO): {self.mqtt_port}")
+        print(f"   MQTT_USERNAME: {self.mqtt_username or '(not set)'}")
+        print(f"   MQTT_PASSWORD set: {'yes' if self.mqtt_password else 'no'}")
         print("")
         
         print("🔌 Connecting to MQTT brokers...")

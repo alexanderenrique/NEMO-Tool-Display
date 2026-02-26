@@ -6,13 +6,16 @@ Main application that receives tool status via MQTT and distributes to ESP32 dis
 """
 
 import asyncio
+import hashlib
+import hmac as hmac_lib
 import json
 import logging
 import os
+import signal
 import sys
 import socket
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
@@ -57,6 +60,27 @@ try:
 except Exception as e:
     print(f"Configuration error: {e}")
     sys.exit(1)
+
+
+def print_mqtt_config_for_debug():
+    """Print current MQTT config to terminal for verification during debugging."""
+    broker = CONFIG.get('mqtt_broker', 'localhost')
+    nemo_port = get_nemo_port()
+    esp32_port = get_esp32_port()
+    user = CONFIG.get('mqtt_username', '')
+    pass_set = 'yes' if CONFIG.get('mqtt_password') else 'no'
+    hmac_set = 'yes' if (CONFIG.get('mqtt_hmac_key') or '').strip() else 'no'
+    print("=" * 60)
+    print("MQTT config (for NEMO backend verification)")
+    print("=" * 60)
+    print(f"  MQTT_BROKER={broker}")
+    print(f"  MQTT_PORT (NEMO)={nemo_port}")
+    print(f"  MQTT_PORT_ESP32={esp32_port}")
+    print(f"  MQTT_USERNAME={user or '(not set)'}")
+    print(f"  MQTT_PASSWORD set={pass_set}")
+    print(f"  MQTT_HMAC_KEY set={hmac_set} (when yes, broker only accepts signed messages)")
+    print("=" * 60)
+
 
 # Configure logging
 log_level = getattr(logging, CONFIG['log_level'], logging.INFO)
@@ -178,8 +202,8 @@ class NEMOToolServer:
         """MQTT connection callback for NEMO client (port 1886)"""
         if rc == 0:
             logger.info("✅ NEMO MQTT client connected successfully")
-            # Subscribe to tool status updates from NEMO backend
-            client.subscribe("nemo/tools/+/+", qos=1)  # Subscribe to all tool events
+            # Subscribe to all tool events (enabled, disabled, start, end); same handler and HMAC verification for all
+            client.subscribe("nemo/tools/+/+", qos=1)  # nemo/tools/<id>/enabled, .../disabled, .../start, .../end
             client.subscribe("nemo/tools/overall", qos=1)
             logger.info("📥 Subscribed to NEMO tool status updates (nemo/tools only)")
         else:
@@ -345,15 +369,160 @@ class NEMOToolServer:
                 
         except Exception as e:
             logger.error(f"❌ Failed to restart mosquitto: {e}")
-    
+
+    def _payload_value_substring(self, raw_payload: str) -> Optional[str]:
+        """Extract the exact substring of raw_payload that is the value of the "payload" key.
+        Returns the literal characters between the opening and closing quotes (no unescaping).
+        This is what we must HMAC so it matches NEMO's signer (same bytes). Returns None if not found.
+        """
+        # Find "payload" key: look for "payload" followed by optional whitespace and colon
+        key = '"payload"'
+        i = raw_payload.find(key)
+        if i < 0:
+            return None
+        i += len(key)
+        # Skip whitespace
+        while i < len(raw_payload) and raw_payload[i] in ' \t\n\r':
+            i += 1
+        if i >= len(raw_payload) or raw_payload[i] != ':':
+            return None
+        i += 1
+        # Skip whitespace after colon
+        while i < len(raw_payload) and raw_payload[i] in ' \t\n\r':
+            i += 1
+        if i >= len(raw_payload) or raw_payload[i] != '"':
+            return None
+        start = i + 1  # first character inside the string value
+        i = start
+        while i < len(raw_payload):
+            if raw_payload[i] == '\\':
+                if i + 1 >= len(raw_payload):
+                    return None
+                nxt = raw_payload[i + 1]
+                if nxt in '"\\/bfnrt':
+                    i += 2
+                elif nxt == 'u' and i + 6 <= len(raw_payload):
+                    i += 6
+                else:
+                    i += 2
+                continue
+            if raw_payload[i] == '"':
+                # End of string value
+                return raw_payload[start:i]
+            i += 1
+        return None
+
+    def _unwrap_and_verify_hmac(self, raw_payload: str, topic: str) -> Tuple[bool, Optional[dict]]:
+        """Verify NEMO envelope: {"payload": "<signed string>", "hmac": "<hex>", "algo": "sha256"}.
+        HMAC is computed over the payload string as decoded from the envelope (same value NEMO signs).
+        Returns (True, parsed_payload) or (False, None).
+        """
+        try:
+            data = json.loads(raw_payload)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.warning(f"[HMAC] Rejected (invalid JSON) topic={topic}")
+            return False, None
+
+        if not isinstance(data, dict) or "payload" not in data or "hmac" not in data:
+            logger.warning(f"[HMAC] Rejected (missing payload/hmac) topic={topic}")
+            return False, None
+
+        msg_hmac_hex = data.get("hmac")
+        algo = (data.get("algo") or "sha256").strip().lower()
+
+        if not isinstance(msg_hmac_hex, str) or not msg_hmac_hex:
+            logger.warning(f"[HMAC] Rejected (empty hmac) topic={topic}")
+            return False, None
+
+        payload_str = data.get("payload")
+        if not isinstance(payload_str, str):
+            logger.warning(f"[HMAC] Rejected (payload must be string) topic={topic}")
+            return False, None
+
+        # Key = shared secret as UTF-8 (exact value from config)
+        key_bytes = self.config["mqtt_hmac_key"].strip().encode("utf-8")
+        # Message = payload string as decoded by JSON (same bytes NEMO signs before envelope serialization)
+        message_bytes = payload_str.encode("utf-8")
+
+        # digestmod must be a name or constructor, not an instance
+        if algo not in hashlib.algorithms_available:
+            logger.warning(f"[HMAC] Rejected (unsupported algo={algo}) topic={topic}")
+            return False, None
+
+        expected = hmac_lib.new(key_bytes, message_bytes, digestmod=algo).hexdigest()
+        if not hmac_lib.compare_digest(expected, msg_hmac_hex.strip().lower()):
+            logger.warning(f"[HMAC] Rejected (bad signature) topic={topic}")
+            # Debug: log what we hashed so it can be compared with NEMO's signer (e.g. payload serialization or topic inclusion)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"[HMAC] expected={expected} received={msg_hmac_hex.strip().lower()} "
+                    f"payload_len={len(payload_str)} payload_preview={repr(payload_str[:200])!s}"
+                )
+            return False, None
+
+        # Parse the payload string as JSON for downstream; if not JSON, return None
+        try:
+            parsed = json.loads(payload_str)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            parsed = None
+        payload = parsed if isinstance(parsed, dict) else ({"value": parsed} if parsed is not None else None)
+        return True, payload
+
+    def _is_hmac_envelope(self, data: dict) -> bool:
+        """Return True iff data is the required HMAC envelope shape: payload, hmac, algo (all present and correct types)."""
+        if not isinstance(data, dict):
+            return False
+        payload = data.get("payload")
+        hmac_val = data.get("hmac")
+        algo = data.get("algo")
+        return (
+            isinstance(payload, str)
+            and isinstance(hmac_val, str)
+            and len(hmac_val) > 0
+            and isinstance(algo, str)
+            and len(algo) > 0
+        )
+
     def on_mqtt_message(self, client, userdata, msg):
-        """Handle incoming MQTT messages from NEMO backend"""
+        """Handle incoming MQTT messages from NEMO backend.
+        When MQTT_HMAC_KEY is set, every message from NEMO (all nemo/tools/... topics including
+        nemo/tools/+/enabled and nemo/tools/+/disabled) must pass the same HMAC verification
+        before any processing; no topic is exempt.
+        For nemo/tools/... when HMAC is required, the payload must be the envelope
+        (payload, hmac, algo); unsigned or malformed messages are rejected.
+        """
         topic = msg.topic
         raw_payload = msg.payload.decode(errors="replace")
-        try:
-            payload = json.loads(raw_payload)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            payload = None
+
+        # For testing: show raw value received from NEMO
+        raw_preview = raw_payload if len(raw_payload) <= 500 else raw_payload[:500] + "..."
+        logger.info(f"📥 raw from NEMO  {topic} | {raw_preview}")
+
+        hmac_key = (self.config.get("mqtt_hmac_key") or "").strip()
+
+        # For nemo/tools/... when HMAC is required, enforce envelope contract: reject if not envelope-shaped.
+        if topic.startswith("nemo/tools/") and hmac_key:
+            try:
+                data = json.loads(raw_payload)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                logger.warning(f"[HMAC] Rejected (nemo/tools/... requires HMAC envelope; invalid JSON) topic={topic}")
+                return
+            if not self._is_hmac_envelope(data):
+                logger.warning(
+                    f"[HMAC] Rejected (nemo/tools/... requires HMAC envelope: payload, hmac, algo) topic={topic}"
+                )
+                return
+
+        # Single HMAC gate for all NEMO messages when key is set (enabled, disabled, start, end, overall).
+        if hmac_key:
+            unwrapped, payload = self._unwrap_and_verify_hmac(raw_payload, topic)
+            if not unwrapped:
+                return  # reject and already logged
+        else:
+            try:
+                payload = json.loads(raw_payload)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = None
 
         try:
             # Handle individual tool status updates
@@ -596,9 +765,24 @@ async def main():
     if not validate_environment():
         logger.error("Environment validation failed. Exiting.")
         sys.exit(1)
+
+    # Display MQTT config for verification during debugging
+    print_mqtt_config_for_debug()
     
+    server = NEMOToolServer()
+
+    def _request_shutdown(*_args):
+        logger.info("Shutdown requested (Ctrl+C or SIGTERM)")
+        server.running = False
+
     try:
-        server = NEMOToolServer()
+        signal.signal(signal.SIGINT, _request_shutdown)
+        signal.signal(signal.SIGTERM, _request_shutdown)
+    except ValueError:
+        # signal.signal can fail if not in main thread (e.g. some IDEs)
+        pass
+
+    try:
         await server.start()
     except Exception as e:
         logger.error(f"Failed to start server: {e}")

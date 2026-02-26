@@ -234,7 +234,29 @@ write_config_env() {
             fi
         fi
         print_info "config.env: MQTT_PORT_ESP32=$esp32_port, MQTT_PORT=$nemo_port"
+        _print_mqtt_config_verification
     fi
+}
+
+# Print MQTT config from config.env for verification during debugging
+_print_mqtt_config_verification() {
+    local config_env="$SCRIPT_DIR/config.env"
+    [ ! -f "$config_env" ] && return
+    echo ""
+    echo "============================================================"
+    echo "MQTT config (for NEMO backend verification)"
+    echo "============================================================"
+    grep -E '^MQTT_BROKER=' "$config_env" 2>/dev/null | sed 's/^/  /' || echo "  MQTT_BROKER=(not set)"
+    grep -E '^MQTT_PORT='   "$config_env" 2>/dev/null | sed 's/^/  /' || echo "  MQTT_PORT=(not set)"
+    grep -E '^MQTT_PORT_ESP32=' "$config_env" 2>/dev/null | sed 's/^/  /' || echo "  MQTT_PORT_ESP32=(not set)"
+    grep -E '^MQTT_USERNAME='   "$config_env" 2>/dev/null | sed 's/^/  /' || echo "  MQTT_USERNAME=(not set)"
+    if grep -qE '^MQTT_PASSWORD=.+$' "$config_env" 2>/dev/null; then
+        echo "  MQTT_PASSWORD set=yes"
+    else
+        echo "  MQTT_PASSWORD set=no"
+    fi
+    echo "============================================================"
+    echo ""
 }
 
 # Read ESP32 and NEMO ports from config.env (defaults if file or keys missing)
@@ -347,8 +369,10 @@ setup_broker_auth() {
     if [ -f "$config_env" ]; then
         _set_config_env_password_line "MQTT_USERNAME" "$mqtt_user" "$config_env"
         _set_config_env_password_line "MQTT_PASSWORD" "$mqtt_pass" "$config_env"
+        _set_config_env_value "MQTT_ALLOW_ANONYMOUS" "false" "$config_env"
         chmod 600 "$config_env" 2>/dev/null || true
         print_success "Credentials written to config.env (used by NEMO server and monitor)"
+        _print_mqtt_config_verification
     fi
     
     # Clear from environment
@@ -377,7 +401,15 @@ create_mosquitto_config() {
     PASSWD_FILE="$MQTT_CONFIG_DIR/passwd"
     USE_AUTH=false
     if [ -f "$PASSWD_FILE" ]; then
-        USE_AUTH=true
+        # Respect explicit MQTT_ALLOW_ANONYMOUS from config.env: only allow anonymous if set to "true"
+        local config_env="$SCRIPT_DIR/config.env"
+        allow_anon=
+        if [ -f "$config_env" ]; then
+            allow_anon=$(grep -E '^MQTT_ALLOW_ANONYMOUS=' "$config_env" 2>/dev/null | cut -d= -f2- | tr -d '\r' | head -1)
+        fi
+        if [ "$allow_anon" != "true" ]; then
+            USE_AUTH=true
+        fi
     fi
     
     # Build config: general settings first
