@@ -62,26 +62,60 @@ get_nemo_port() {
     echo "$MQTT_PORT"  # NEMO port from config.env
 }
 
+# Kill any process bound to a given port; use sudo if needed.
+kill_port() {
+    local port="$1"
+    if lsof -ti :"$port" >/dev/null 2>&1; then
+        lsof -ti :"$port" | xargs kill -9 2>/dev/null || true
+        sleep 1
+    fi
+    if lsof -ti :"$port" >/dev/null 2>&1; then
+        sudo lsof -ti :"$port" | xargs sudo kill -9 2>/dev/null || true
+        sleep 1
+    fi
+}
+
+# Ensure all MQTT ports are free (run before starting broker).
+kill_processes_on_mqtt_ports() {
+    local esp32_port nemo_port
+    esp32_port=$(get_esp32_port)
+    nemo_port=$(get_nemo_port)
+    print_info "Clearing MQTT ports $esp32_port, $nemo_port, 9001..."
+    for port in "$esp32_port" "$nemo_port" 9001; do
+        kill_port "$port"
+    done
+    pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
+    pkill mosquitto 2>/dev/null || true
+    pkill -9 mosquitto 2>/dev/null || true
+    if systemctl is-active --quiet mosquitto 2>/dev/null; then
+        sudo systemctl stop mosquitto 2>/dev/null || true
+    fi
+    for port in "$esp32_port" "$nemo_port" 9001; do
+        kill_port "$port"
+    done
+    sleep 3
+}
+
+# Lightweight: only kill by port (no long sleep). Use right before starting broker.
+ensure_mqtt_ports_free() {
+    local esp32_port nemo_port
+    esp32_port=$(get_esp32_port)
+    nemo_port=$(get_nemo_port)
+    for port in "$esp32_port" "$nemo_port" 9001; do
+        kill_port "$port"
+    done
+    sleep 1
+}
+
 # Function to kill all NEMO processes
 kill_all_processes() {
     print_info "Stopping all NEMO-related processes..."
+    # Free MQTT ports first (and kill mosquitto by name) so broker can bind later
+    kill_processes_on_mqtt_ports
     pkill -f "python.*main\.py" 2>/dev/null || true
     pkill -f "python.*manage\.py" 2>/dev/null || true
     pkill -f "python.*nemo" 2>/dev/null || true
-    pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
     pkill -f "mosquitto_sub" 2>/dev/null || true
-    
-    # Clear ports
-    esp32_port=$(get_esp32_port)
-    nemo_port=$(get_nemo_port)
-    
-    for port in $esp32_port $nemo_port 9001; do
-        if lsof -ti :$port >/dev/null 2>&1; then
-            lsof -ti :$port | xargs kill -9 2>/dev/null || true
-        fi
-    done
-    
-    sleep 2
     print_success "All processes stopped"
 }
 
@@ -89,6 +123,9 @@ kill_all_processes() {
 start_services() {
     # Start MQTT broker
     print_info "Starting MQTT broker..."
+    
+    # Ensure MQTT ports are free right before starting (in case something bound in between)
+    ensure_mqtt_ports_free
     
     # Fix permissions on data directory before starting
     MQTT_DATA_DIR="$SCRIPT_DIR/mqtt/data"

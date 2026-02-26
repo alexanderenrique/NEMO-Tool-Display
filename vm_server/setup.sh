@@ -126,39 +126,42 @@ install_mosquitto() {
 stop_existing_processes() {
     print_header "Stopping Existing Processes"
     
+    # Kill anything on MQTT ports first (with sudo fallback for system mosquitto)
+    ESP32_PORT=$(_get_esp32_port)
+    NEMO_PORT=$(_get_nemo_port)
+    print_info "Clearing MQTT ports $ESP32_PORT, $NEMO_PORT, 9001..."
+    for port in $ESP32_PORT $NEMO_PORT 9001; do
+        if lsof -ti :$port >/dev/null 2>&1; then
+            lsof -ti :$port | xargs kill -9 2>/dev/null || true
+            sleep 1
+        fi
+        if lsof -ti :$port >/dev/null 2>&1; then
+            sudo lsof -ti :$port | xargs sudo kill -9 2>/dev/null || true
+            sleep 1
+        fi
+    done
+    pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
+    pkill mosquitto 2>/dev/null || true
+    pkill -9 mosquitto 2>/dev/null || true
+    if systemctl is-active --quiet mosquitto 2>/dev/null; then
+        print_info "Stopping systemd Mosquitto service..."
+        sudo systemctl stop mosquitto 2>/dev/null || true
+    fi
+    for port in $ESP32_PORT $NEMO_PORT 9001; do
+        if lsof -ti :$port >/dev/null 2>&1; then
+            sudo lsof -ti :$port | xargs sudo kill -9 2>/dev/null || true
+            sleep 1
+        fi
+    done
+    sleep 2
+
     # Stop NEMO server processes
     if pgrep -f "python.*main\.py" >/dev/null 2>&1; then
         print_info "Stopping existing NEMO server processes..."
         pkill -f "python.*main\.py" 2>/dev/null || true
     fi
     
-    # Stop ALL Mosquitto processes (including systemd service)
-    if pgrep mosquitto >/dev/null 2>&1; then
-        print_info "Stopping all Mosquitto processes..."
-        # Try graceful stop first
-        pkill mosquitto 2>/dev/null || true
-        sleep 1
-        # Force kill if still running
-        pkill -9 mosquitto 2>/dev/null || true
-    fi
-    
-    # Stop systemd Mosquitto service if it exists
-    if systemctl is-active --quiet mosquitto 2>/dev/null; then
-        print_info "Stopping systemd Mosquitto service..."
-        sudo systemctl stop mosquitto 2>/dev/null || true
-    fi
-    
-    # Clean up ports - kill anything using our ports (read from config if available)
-    ESP32_PORT=$(_get_esp32_port)
-    NEMO_PORT=$(_get_nemo_port)
-    for port in $ESP32_PORT $NEMO_PORT 9001; do
-        if lsof -ti :$port >/dev/null 2>&1; then
-            print_info "Clearing port $port..."
-            lsof -ti :$port | xargs kill -9 2>/dev/null || true
-        fi
-    done
-    
-    sleep 3
+    sleep 1
     
     # Verify ports are free
     ports_free=true
@@ -496,6 +499,27 @@ start_services() {
     # Start MQTT broker
     print_info "Starting MQTT broker..."
     
+    # Ensure MQTT ports are free (kill by port with sudo fallback)
+    ESP32_PORT=$(_get_esp32_port)
+    NEMO_PORT=$(_get_nemo_port)
+    for port in $ESP32_PORT $NEMO_PORT 9001; do
+        if lsof -ti :$port >/dev/null 2>&1; then
+            print_info "Clearing port $port before starting broker..."
+            lsof -ti :$port | xargs kill -9 2>/dev/null || true
+            sleep 1
+        fi
+        if lsof -ti :$port >/dev/null 2>&1; then
+            sudo lsof -ti :$port | xargs sudo kill -9 2>/dev/null || true
+            sleep 1
+        fi
+    done
+    pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
+    pkill -9 mosquitto 2>/dev/null || true
+    if systemctl is-active --quiet mosquitto 2>/dev/null; then
+        sudo systemctl stop mosquitto 2>/dev/null || true
+    fi
+    sleep 2
+    
     # Verify config file exists
     if [ ! -f "$CONFIG_FILE" ]; then
         print_error "Mosquitto config file not found: $CONFIG_FILE"
@@ -507,28 +531,6 @@ start_services() {
     if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
         chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
     fi
-    
-    # Get ports from config.env
-    ESP32_PORT=$(_get_esp32_port)
-    NEMO_PORT=$(_get_nemo_port)
-    
-    for port in $ESP32_PORT $NEMO_PORT; do
-        if lsof -ti :$port >/dev/null 2>&1; then
-            print_warning "Port $port is already in use. Attempting to free it..."
-            # Kill any process using the port
-            lsof -ti :$port | xargs kill -9 2>/dev/null || true
-            sleep 2
-            # Verify it's free now
-            if lsof -ti :$port >/dev/null 2>&1; then
-                print_error "Port $port is still in use after cleanup attempt!"
-                print_error "Please manually stop the process using port $port:"
-                print_error "  sudo lsof -ti :$port | xargs kill -9"
-                return 1
-            else
-                print_success "Port $port is now free"
-            fi
-        fi
-    done
     
     # Try to start Mosquitto and capture any errors
     MOSQUITTO_ERROR=$(mosquitto -c "$CONFIG_FILE" -d 2>&1)
