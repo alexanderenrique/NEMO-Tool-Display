@@ -13,22 +13,13 @@ cd vm_server
 The setup script will:
 - Install and configure Mosquitto MQTT broker
 - Set up Python virtual environment with dependencies
-- Generate an HMAC key for MQTT (no username/password required)
+- Generate an HMAC key for NEMO↔broker authentication (broker only accepts signed messages when set)
 - Start MQTT broker and NEMO server
 
 ### 2. ESP32 Configuration
-Edit `platformio.ini` with your network and MQTT settings:
-```ini
-build_flags = 
-    -DWIFI_SSID="your_wifi_ssid"      # Replace with your WiFi SSID
-    -DWIFI_PASSWORD="your_wifi_password"  # Replace with your WiFi password
-    -DMQTT_BROKER="your_mqtt_broker_ip"  # Replace with your VM server's IP
-    -DMQTT_PORT_ESP32=1883            # ESP32 MQTT port
-    -DMQTT_USE_SSL=false              # Set to true if using SSL
-    -DTARGET_TOOL_NAME="woollam"      # Tool name for this display
-```
+Edit `src/config.h` with your WiFi SSID/password, MQTT broker and credentials, and tool name (e.g. `TARGET_TOOL_NAME`).
 
-**⚠️ SECURITY WARNING:** Never commit real WiFi credentials or IP addresses to version control!
+**⚠️ SECURITY WARNING:** Never commit real WiFi credentials, MQTT passwords, or IP addresses to version control!
 
 ### 3. Upload Firmware
 ```bash
@@ -68,16 +59,14 @@ VCC
 The system uses **centralized configuration** to ensure consistency between ESP32 and VM server:
 
 ### Centralized Configuration System
-- **`include/config.h`** - Master configuration with fallback defaults
-- **`platformio.ini`** - ESP32 build-time configuration (overrides config.h)
-- **`vm_server/config_parser.py`** - Python parser that reads from config.h
+- **`src/config.h`** - Single configuration file (WiFi, MQTT, tool, display; not overridden by build flags)
+- **`vm_server/config_parser.py`** - Python parser that reads from `src/config.h`
 
 ### VM Server (config.env)
 ```env
 # MQTT Configuration
 MQTT_BROKER=your_mqtt_broker_ip   # Replace with your VM server's IP
 MQTT_PORT=1886                    # NEMO backend port (VM server only)
-MQTT_USE_SSL=false
 MQTT_USERNAME=
 MQTT_PASSWORD=
 
@@ -87,21 +76,13 @@ MAX_NAME_LENGTH=13
 LOG_LEVEL=INFO
 ```
 
-### ESP32 (platformio.ini)
-```ini
-build_flags = 
-    -DWIFI_SSID="your_wifi_ssid"      # Replace with your WiFi SSID
-    -DWIFI_PASSWORD="your_wifi_password"  # Replace with your WiFi password
-    -DMQTT_BROKER="your_mqtt_broker_ip"  # Replace with your VM server's IP
-    -DMQTT_PORT_ESP32=1883            # ESP32 MQTT port
-    -DMQTT_USE_SSL=false              # SSL enabled/disabled
-    -DTARGET_TOOL_NAME="woollam"      # Tool name for this display
-```
+### ESP32 (src/config.h)
+All ESP32 settings (WiFi, MQTT broker/port/credentials, tool ID/name, display) are in `src/config.h`. When broker authentication is enabled on the VM server, set `MQTT_USERNAME` and `MQTT_PASSWORD` in `src/config.h` to match `vm_server/config.env`.
 
 ### Port Configuration
 - **ESP32 Port (1883)**: Used by ESP32 displays to receive status updates
 - **NEMO Port (1886)**: Used by VM server to receive messages from NEMO backend
-- **Configuration**: ESP32 port defined in `platformio.ini`, NEMO port defined in `config.env`
+- **Configuration**: ESP32 port in `src/config.h`, NEMO port in `config.env`
 
 Tool names are provided in MQTT messages from NEMO; no separate tool lookup or mapping file is required.
 
@@ -154,6 +135,19 @@ Tool names are provided in MQTT messages from NEMO; no separate tool lookup or m
 }
 ```
 
+### HMAC (NEMO↔broker)
+When `MQTT_HMAC_KEY` is set in `config.env`, the VM server only accepts messages that include a valid HMAC. The broker (VM server) rejects any message without a correct signature. ESP32 traffic (port 1883) is not HMAC-protected.
+
+**Envelope format when HMAC is enabled:** NEMO must publish:
+```json
+{"payload": "<original payload string>", "hmac": "<hex signature>", "algo": "sha256"}
+```
+- **payload**: The exact original payload string (e.g. JSON as a string). This is the string that was signed—same formatting/whitespace, no re-serialization.
+- **hmac**: HMAC of that payload string, hex-encoded. Computed as `HMAC(secret_key, payload)` with key = shared secret (UTF-8), message = payload string (UTF-8), algorithm from `algo`.
+- **algo**: Digest algorithm, e.g. `sha256` (default if omitted).
+
+Verification uses the same secret (UTF-8), hashes the `payload` string as-is (UTF-8), and compares the hex digest with `hmac` using constant-time comparison. If HMAC is not required, leave `MQTT_HMAC_KEY` empty; then the server accepts normal (unwrapped) payloads.
+
 ## Setup Process Details
 
 ### VM Server Setup Steps
@@ -170,8 +164,8 @@ Tool names are provided in MQTT messages from NEMO; no separate tool lookup or m
 11. **Start NEMO Server** - Launch Python application
 
 ### ESP32 Setup Steps
-1. **Configure WiFi** - Set SSID and password in `platformio.ini`
-2. **Configure MQTT** - Set broker IP and port in `platformio.ini`
+1. **Configure WiFi** - Set SSID and password in `src/config.h`
+2. **Configure MQTT** - Set broker IP and port in `src/config.h`
 3. **Set Tool Name** - Specify which tool this display shows
 4. **Upload Firmware** - Compile and flash to ESP32
 
@@ -179,12 +173,12 @@ Tool names are provided in MQTT messages from NEMO; no separate tool lookup or m
 
 ### ESP32 Issues
 **Can't connect to WiFi:**
-- Check WiFi credentials in `platformio.ini`
+- Check WiFi credentials in `src/config.h`
 - Verify network is 2.4GHz (ESP32 doesn't support 5GHz)
 - Check signal strength
 
 **Can't connect to MQTT:**
-- Verify MQTT broker IP address in `platformio.ini`
+- Verify MQTT broker IP address in `src/config.h`
 - Check MQTT port (1883 for ESP32, 1886 for NEMO backend)
 - Ensure ESP32 and server are on same network
 - Check MQTT broker IP and port match the server
@@ -205,6 +199,11 @@ Tool names are provided in MQTT messages from NEMO; no separate tool lookup or m
 - Verify configuration in `config.env`
 - Run comprehensive tests: `python3 test_system.py`
 - Test MQTT: `mosquitto_sub -h localhost -t "nemo/#" -v`
+
+**NEMO backend MQTT "unauthorized" (rc=5) or connection timeout:**
+- The NEMO Django app (nemo-ce-alex) must use the **same** broker, port, username, and password as `vm_server/config.env`. Set NEMO's MQTT settings to match: `MQTT_BROKER` (use the machine IP where Mosquitto runs, or `localhost` if NEMO and Mosquitto run on the same host), `MQTT_PORT=1886`, `MQTT_USERNAME` and `MQTT_PASSWORD` identical to config.env.
+- **Unauthorized (rc=5)**: Username/password in NEMO do not match the broker's password file. Re-run `vm_server/setup.sh` to set broker auth, then copy the printed MQTT config into NEMO's MQTT settings.
+- **Connection timeout to localhost:1886**: Mosquitto may not be running, or NEMO is pointing at the wrong host. Start the broker (e.g. `vm_server/quick_restart.sh` or start Mosquitto manually) and ensure NEMO's broker host is correct. When VM server or mqtt_monitor starts, they print the current MQTT config for verification.
 
 ### Network Issues
 **ESP32 can't reach server:**
@@ -327,8 +326,8 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 │   │   └── log/                # Log files
 │   └── venv/                   # Python virtual environment
 ├── src/main.cpp                # ESP32 firmware
-├── include/                    # ESP32 configuration
-│   ├── config.h               # ESP32 settings
+├── src/config.h                # ESP32 configuration (single source)
+├── include/                    # ESP32 headers
 │   └── lv_conf.h              # LVGL configuration
 ├── lib/                       # ESP32 libraries
 ├── platformio.ini             # Build configuration
@@ -340,7 +339,7 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 ### 🔒 **CRITICAL SECURITY REQUIREMENTS**
 
 1. **Never commit real credentials to version control:**
-   - WiFi SSID and password in `platformio.ini`
+   - WiFi SSID and password in `src/config.h`
    - MQTT broker IP addresses
    - NEMO API tokens in `config.env`
    - Any other sensitive configuration
@@ -356,7 +355,8 @@ mosquitto_sub -h localhost -t "nemo/test" -v
    - Rotate tokens regularly
 
 4. **MQTT Security:**
-   - Use the generated HMAC key for NEMO backend authentication
+   - HMAC is between the NEMO backend and the VM server (broker): when `MQTT_HMAC_KEY` is set, the server only accepts messages with a valid HMAC and rejects others.
+   - NEMO sends: `{"payload": "<exact payload string>", "hmac": "<hex>", "algo": "sha256"}`. The signed value is the exact `payload` string (UTF-8); key is the shared secret (UTF-8). No re-serialization or trimming.
    - Restrict broker access with firewall rules
 
 5. **Network Security:**

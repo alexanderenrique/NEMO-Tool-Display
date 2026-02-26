@@ -315,8 +315,15 @@ void connectMQTT() {
   
   if (!mqttClient.connected()) {
     Serial.print("Attempting MQTT connection...");
-    
-    if (mqttClient.connect(mqtt_client_id)) {
+
+    bool connected = false;
+    if (mqtt_username && mqtt_username[0] != '\0' && mqtt_password && mqtt_password[0] != '\0') {
+      connected = mqttClient.connect(mqtt_client_id, mqtt_username, mqtt_password);
+    } else {
+      connected = mqttClient.connect(mqtt_client_id);
+    }
+
+    if (connected) {
       Serial.println(" connected");
       Serial.print("Client ID: ");
       Serial.println(mqtt_client_id);
@@ -415,11 +422,9 @@ void processMQTTMessage(const char* topic, const char* payload) {
     }
     
     
-    // Extract timestamp and time label
+    // Extract timestamp and time label (use payload values when present)
     if (doc["timestamp"].is<const char*>()) {
       const char* timestamp = doc["timestamp"];
-      const char* timeLabel = doc["time_label"].as<const char*>();
-      
       if (time_value) {
         lv_label_set_text(time_value, timestamp);
         lv_obj_set_style_text_color(time_value, lv_color_hex(0x000000), 0);
@@ -427,8 +432,18 @@ void processMQTTMessage(const char* topic, const char* payload) {
         Serial.println(timestamp);
       }
     }
-    
-    
+    if (doc["time_label"].is<const char*>()) {
+      const char* timeLabelFromPayload = doc["time_label"];
+      if (time_label) {
+        lv_label_set_text(time_label, timeLabelFromPayload);
+      }
+    }
+    if (doc["user_label"].is<const char*>()) {
+      const char* userLabelFromPayload = doc["user_label"];
+      if (user_label) {
+        lv_label_set_text(user_label, userLabelFromPayload);
+      }
+    }
     // Extract tool name from payload for display (if available)
     if (doc["tool_name"].is<const char*>()) {
       const char* toolNameFromPayload = doc["tool_name"];
@@ -442,52 +457,13 @@ void processMQTTMessage(const char* topic, const char* payload) {
       }
     }
     
-    // Extract tool status from event_type field and in_use status
+    // Extract tool status from event_type and in_use (only "enabled" and "disabled")
     if (doc["event_type"].is<const char*>()) {
       const char* eventType = doc["event_type"];
-      bool inUse = doc["in_use"].as<bool>();
-      
-      // Debug output
       Serial.print("Tool status: ");
       Serial.println(eventType);
-      
-      // Update time label based on tool status
-      if (time_label) {
-        String timeLabelText = "";
-      if (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_ENABLED) == 0 || strcmp(eventType, STATUS_IDLE) == 0) {
-          timeLabelText = "Enabled Since";
-        } else if (strcmp(eventType, "disabled") == 0) {
-          timeLabelText = "Disabled Since";
-        } else {
-          timeLabelText = "Change Time"; // Fallback for other statuses
-        }
-        lv_label_set_text(time_label, timeLabelText.c_str());
-        Serial.print("Updated time label: ");
-        Serial.println(timeLabelText.c_str());
-      }
-      
-      // Update user label based on tool status
-      if (user_label) {
-        String userLabelText = "";
-      if (strcmp(eventType, STATUS_ACTIVE) == 0 || strcmp(eventType, STATUS_ENABLED) == 0 || strcmp(eventType, STATUS_IDLE) == 0) {
-          userLabelText = "User";
-        } else if (strcmp(eventType, "disabled") == 0) {
-          userLabelText = "Last User";
-        } else {
-          userLabelText = "User"; // Fallback for other statuses
-        }
-        lv_label_set_text(user_label, userLabelText.c_str());
-        Serial.print("Updated user label: ");
-        Serial.println(userLabelText.c_str());
-      }
-      
-      // Update status indicator based on tool state
-    // Consider "active" and "enabled" (and legacy "idle") as enabled states, "disabled" as disabled
-    bool isToolEnabled = (
-      strcmp(eventType, STATUS_ACTIVE) == 0 ||
-      strcmp(eventType, STATUS_ENABLED) == 0 ||
-      strcmp(eventType, STATUS_IDLE) == 0
-    );
+      // Only two event types: enabled -> green, disabled -> red
+      bool isToolEnabled = (strcmp(eventType, "enabled") == 0);
       updateStatusIndicator(isToolEnabled);
     }
   }

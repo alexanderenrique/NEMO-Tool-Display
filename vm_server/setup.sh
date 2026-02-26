@@ -375,6 +375,7 @@ setup_broker_auth() {
         _set_config_env_value "MQTT_ALLOW_ANONYMOUS" "false" "$config_env"
         chmod 600 "$config_env" 2>/dev/null || true
         print_success "Credentials written to config.env (used by NEMO server and monitor)"
+        print_info "ESP32 displays: set MQTT_USERNAME and MQTT_PASSWORD in platformio.ini (same values) so they can connect to port 1883."
         _print_mqtt_config_verification
     fi
     

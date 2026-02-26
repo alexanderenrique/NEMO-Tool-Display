@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Configuration Parser for NEMO Tool Display
-Reads configuration from include/config.h to ensure consistency between ESP32 and VM server
+Reads configuration from src/config.h to ensure consistency between ESP32 and VM server
 """
 
 import re
@@ -9,13 +9,13 @@ import os
 from pathlib import Path
 
 class ConfigParser:
-    """Parse configuration from config.h file"""
+    """Parse configuration from src/config.h file"""
     
     def __init__(self, config_h_path=None):
         if config_h_path is None:
             # Default to include/config.h relative to this script
             script_dir = Path(__file__).parent
-            config_h_path = script_dir.parent / "include" / "config.h"
+            config_h_path = script_dir.parent / "src" / "config.h"
         
         self.config_h_path = Path(config_h_path)
         self._config = {}
