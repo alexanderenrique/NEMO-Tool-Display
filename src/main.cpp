@@ -99,16 +99,13 @@ void setup() {
   // Create simple UI
   create_simple_ui();
   
-  // --- WiFi and MQTT commented out for touch testing ---
-  // setupWiFi();
-  // setupMQTT();
-  
-  if (status_label) {
-    lv_label_set_text(status_label, "Touch enabled");
-  }
+  // Enable WiFi and MQTT so we can show live connection status on the display
+  setupWiFi();
+  setupMQTT();
+  updateConnectionStatus();
   
   Serial.println("Touch input registered with LVGL (T_CS=33)");
-  Serial.println("Setup complete - touch test mode (WiFi/MQTT disabled)");
+  Serial.println("Setup complete - WiFi/MQTT status mode");
 }
 
 void loop() {
@@ -118,25 +115,44 @@ void loop() {
   // Handle LVGL tasks
   lv_timer_handler();
   
-  // --- WiFi and MQTT commented out for touch testing ---
-  // {
-  //   static unsigned long lastMqttAttempt = 0;
-  //   static int mqttRetryCount = 0;
-  //   ...
-  // }
-  // mqttClient.loop();
+  // Maintain WiFi/MQTT connectivity and update status label
+  {
+    static unsigned long lastWifiAttempt = 0;
+    static unsigned long lastMqttAttempt = 0;
+    static unsigned long lastStatusUpdate = 0;
+    unsigned long now = millis();
 
-  // Heartbeat: if this stops printing, the main loop has stalled
-  static unsigned long lastHeartbeat = 0;
-  if (millis() - lastHeartbeat > 1000) {
-    lastHeartbeat = millis();
-    Serial.println("Touch heartbeat: poll active");
+    // Periodically try to (re)connect WiFi if not connected
+    if (WiFi.status() != WL_CONNECTED) {
+      if (now - lastWifiAttempt >= WIFI_RECONNECT_INTERVAL) {
+        lastWifiAttempt = now;
+        Serial.println("WiFi not connected, attempting periodic reconnection...");
+        WiFi.disconnect();
+        WiFi.begin(ssid, password);
+      }
+    }
+    
+    // Periodically try to (re)connect MQTT if WiFi is up
+    if (WiFi.status() == WL_CONNECTED && !mqttClient.connected()) {
+      if (now - lastMqttAttempt >= MQTT_RECONNECT_INTERVAL) {
+        lastMqttAttempt = now;
+        connectMQTT();
+      }
+    }
+    
+    // Run MQTT client loop when connected
+    if (mqttClient.connected()) {
+      mqttClient.loop();
+    }
+    
+    // Periodically refresh the consolidated WiFi/MQTT status label
+    if (now - lastStatusUpdate >= DISPLAY_UPDATE_INTERVAL) {
+      lastStatusUpdate = now;
+      updateConnectionStatus();
+    }
   }
 
-  // --- Periodic MQTT status check commented out for touch testing ---
-  // static unsigned long lastStatusCheck = 0;
-  // if (millis() - lastStatusCheck > DISPLAY_UPDATE_INTERVAL * 10) { ... }
-  
+
   delay(5); // Reduced delay for LVGL responsiveness
 }
 
@@ -457,7 +473,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
       }
     }
     
-    // Extract tool status from event_type and in_use (only "enabled" and "disabled")
+    // Extract tool status from event_type and update related labels (only "enabled" and "disabled")
     if (doc["event_type"].is<const char*>()) {
       const char* eventType = doc["event_type"];
       Serial.print("Tool status: ");
@@ -465,6 +481,14 @@ void processMQTTMessage(const char* topic, const char* payload) {
       // Only two event types: enabled -> green, disabled -> red
       bool isToolEnabled = (strcmp(eventType, "enabled") == 0);
       updateStatusIndicator(isToolEnabled);
+      // When tool is enabled, show "Current User"; when disabled, show "Last User"
+      if (user_label) {
+        if (isToolEnabled) {
+          lv_label_set_text(user_label, "Current User");
+        } else {
+          lv_label_set_text(user_label, "Last User");
+        }
+      }
     }
   }
   
