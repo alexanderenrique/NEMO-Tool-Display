@@ -1,0 +1,3 @@
+# Mosquitto password file (hashed).
+# Generate with: mosquitto_passwd -b -c config/passwd <username> <password>
+# Do not commit the real passwd file; copy this to passwd and run the command above.

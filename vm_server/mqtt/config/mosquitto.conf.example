@@ -1,0 +1,38 @@
+# Mosquitto MQTT Broker Configuration for NEMO Tool Display
+# Copy to mosquitto.conf and edit paths for your install.
+# setup.sh generates this file; use relative paths so it is safe to share.
+
+# General settings
+persistence true
+persistence_location ./data/
+log_dest file ./log/mosquitto.log
+log_type error
+log_type warning
+log_type notice
+log_type information
+
+# Broker authentication (hashed credentials in password file)
+# Create passwd with: mosquitto_passwd -b -c config/passwd <username> <password>
+allow_anonymous false
+password_file ./config/passwd
+
+# Network settings - ESP32 displays
+listener 1883 0.0.0.0
+protocol mqtt
+
+# Network settings - NEMO backend
+listener 1886 0.0.0.0
+protocol mqtt
+
+# WebSocket support (optional)
+listener 9001 0.0.0.0
+protocol websockets
+
+# Connection settings
+max_connections 100
+max_inflight_messages 20
+max_queued_messages 100
+
+# Message settings
+max_packet_size 268435456
+max_topic_alias 10

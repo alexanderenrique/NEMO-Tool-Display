@@ -55,6 +55,16 @@ logs/
 # MQTT data
 mqtt/data/
 mqtt/log/
+vm_server/mqtt/data/
+vm_server/mqtt/log/
+
+# MQTT broker secrets and local config
+vm_server/mqtt/certs/
+vm_server/mqtt/config/passwd
+vm_server/mqtt/config/mosquitto.conf
+
+# Clangd / IDE caches (may index sensitive files)
+.cache/
 
 # OS
 .DS_Store
