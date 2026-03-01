@@ -26,11 +26,12 @@ venv/
 env/
 ENV/
 
-# Environment variables
+# Environment variables and secrets (copy .example files and fill in locally)
 .env
 .env.local
 .env.*.local
 config.env
+src/config.h
 
 # IDE
 .vscode/
