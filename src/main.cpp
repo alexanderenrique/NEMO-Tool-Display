@@ -257,60 +257,57 @@ void create_simple_ui() {
   lv_obj_set_style_bg_color(cont, lv_color_hex(backgroundColor), 0);
   lv_obj_set_style_border_width(cont, 0, 0);  // No border
   lv_obj_set_style_radius(cont, 0, 0);        // No rounded corners
+  lv_obj_set_style_pad_all(cont, 0, 0);      // No padding so child (8,8) is true 8px from edge
   lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);  // Disable scrollbars
-  
-  // Create status indicator block (180px wide, full height on left side)
+  // Small buffer between display edge and colored border
+  const int screenMargin = 8;
+  // Status indicator: full screen minus margin, thick red/green border, white interior
   status_indicator = lv_obj_create(cont);
-  lv_obj_set_size(status_indicator, 180, 320);  // 180px wide, full height
-  lv_obj_set_pos(status_indicator, 0, 0);       // Position at left edge
-  lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFF0000), 0); // Start with red (disabled)
-  lv_obj_set_style_border_width(status_indicator, 0, 0);  // No border
-  lv_obj_set_style_radius(status_indicator, 0, 0);        // No rounded corners
-  lv_obj_set_scrollbar_mode(status_indicator, LV_SCROLLBAR_MODE_OFF);  // Disable scrollbars
-  
-  // Title label - use dynamic tool name (positioned on right side)
-  title_label = lv_label_create(cont);
+  lv_obj_set_size(status_indicator, 480 - 2 * screenMargin, 320 - 2 * screenMargin);
+  lv_obj_set_pos(status_indicator, screenMargin, screenMargin);
+  lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFFFFFF), 0);  // White interior
+  lv_obj_set_style_border_width(status_indicator, 20, 0);  // Thick border (~2x previous)
+  lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFF0000), 0);  // Start red (disabled)
+  lv_obj_set_style_radius(status_indicator, 0, 0);
+  lv_obj_set_style_pad_all(status_indicator, 8, 0);  // Padding so text sits inside border
+  lv_obj_set_scrollbar_mode(status_indicator, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(status_indicator, LV_OBJ_FLAG_SCROLLABLE);
+  // Title label - tool name inside left box, left-aligned
+  title_label = lv_label_create(status_indicator);
   lv_label_set_text(title_label, toolDisplayName.c_str());
   lv_obj_set_style_text_font(title_label, titleFont, 0);
   lv_obj_set_style_text_color(title_label, lv_color_hex(textColor), 0);
-  lv_obj_align(title_label, LV_ALIGN_TOP_MID, 90, 20); // Offset by 90px to center in right area
-  
-  // Status label - consolidated WiFi and MQTT status (positioned at bottom left, moved up 10px)
-  status_label = lv_label_create(cont);
-  lv_label_set_text(status_label, "Initializing...");
-  lv_obj_set_style_text_font(status_label, statusFont, 0);
-  lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(status_label, 185, 280); // Position at 185px from left, 280px from top (was 290, moved up 10px)
-  
-  // User label (positioned at 185px from left, moved down 20px)
-  user_label = lv_label_create(cont);
+  lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 0, 0);
+  // User label - inside left box, left-aligned
+  user_label = lv_label_create(status_indicator);
   lv_label_set_text(user_label, "User");
   lv_obj_set_style_text_font(user_label, labelFont, 0);
   lv_obj_set_style_text_color(user_label, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(user_label, 185, 100); // Position at 185px from left, 100px from top (was 80)
-  
-  // User value (positioned below user label, reduced gap by 10px)
-  user_value = lv_label_create(cont);
+  lv_obj_align(user_label, LV_ALIGN_TOP_LEFT, 0, 55);
+  // User value - inside left box, left-aligned
+  user_value = lv_label_create(status_indicator);
   lv_label_set_text(user_value, "--");
   lv_obj_set_style_text_font(user_value, valueFont, 0);
   lv_obj_set_style_text_color(user_value, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(user_value, 185, 120); // Position at 185px from left, 120px from top (was 130, now 20px gap)
-  
-  // Time label (positioned at 185px from left, with additional 20px spacing)
-  time_label = lv_label_create(cont);
+  lv_obj_align(user_value, LV_ALIGN_TOP_LEFT, 0, 72);
+  // Time label - inside left box, left-aligned
+  time_label = lv_label_create(status_indicator);
   lv_label_set_text(time_label, "Enabled/Disabled Since");
   lv_obj_set_style_text_font(time_label, labelFont, 0);
   lv_obj_set_style_text_color(time_label, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(time_label, 185, 190); // Position at 185px from left, 190px from top (was 150, now 60px gap)
-  
-  // Time value (positioned below time label, reduced gap by 10px)
-  time_value = lv_label_create(cont);
+  lv_obj_align(time_label, LV_ALIGN_TOP_LEFT, 0, 140);
+  // Time value - inside left box, left-aligned
+  time_value = lv_label_create(status_indicator);
   lv_label_set_text(time_value, "--:--");
   lv_obj_set_style_text_font(time_value, valueFont, 0);
   lv_obj_set_style_text_color(time_value, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(time_value, 185, 210); // Position at 185px from left, 210px from top (was 220, now 20px gap)
-  
-  
+  lv_obj_align(time_value, LV_ALIGN_TOP_LEFT, 0, 162);
+  // Status label - WiFi/MQTT status, left-aligned at bottom inside bordered box
+  status_label = lv_label_create(status_indicator);
+  lv_label_set_text(status_label, "Initializing...");
+  lv_obj_set_style_text_font(status_label, statusFont, 0);
+  lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
+  lv_obj_align(status_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
   Serial.println("Simple LVGL UI created successfully!");
 }
 
@@ -560,17 +557,14 @@ void updateConnectionStatus() {
   Serial.println(statusText.c_str());
 }
 
-// Update status indicator color based on tool state
+// Update status indicator color based on tool state (thick border, not fill)
 void updateStatusIndicator(bool isEnabled) {
   if (!status_indicator) return;
-  
   if (isEnabled) {
-    // Green for enabled
-    lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0x00FF00), 0);
+    lv_obj_set_style_border_color(status_indicator, lv_color_hex(0x00FF00), 0);
     Serial.println("Status indicator: GREEN (enabled)");
   } else {
-    // Red for disabled
-    lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFF0000), 0);
+    lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFF0000), 0);
     Serial.println("Status indicator: RED (disabled)");
   }
 }
