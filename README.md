@@ -238,7 +238,7 @@ cd vm_server
 
 **What it does:**
 1. Stops all existing MQTT broker and server processes
-2. Clears MQTT ports (1883, 1886, 9001)
+2. Clears MQTT ports (1883, 1886)
 3. Starts Mosquitto MQTT broker on both ports
 4. Starts the NEMO server (vm_server/main.py)
 
@@ -251,7 +251,7 @@ python3 test_system.py
 
 **What it tests:**
 - System processes (MQTT broker, NEMO server)
-- Port connectivity (1883, 1886, 9001)
+- Port connectivity (1883, 1886)
 - Message parsing and trimming logic
 - MQTT connections (NEMO and ESP32)
 - End-to-end functionality

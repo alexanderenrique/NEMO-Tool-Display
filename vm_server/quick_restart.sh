@@ -80,8 +80,8 @@ kill_processes_on_mqtt_ports() {
     local esp32_port nemo_port
     esp32_port=$(get_esp32_port)
     nemo_port=$(get_nemo_port)
-    print_info "Clearing MQTT ports $esp32_port, $nemo_port, 9001..."
-    for port in "$esp32_port" "$nemo_port" 9001; do
+    print_info "Clearing MQTT ports $esp32_port, $nemo_port..."
+    for port in "$esp32_port" "$nemo_port"; do
         kill_port "$port"
     done
     pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
@@ -90,7 +90,7 @@ kill_processes_on_mqtt_ports() {
     if systemctl is-active --quiet mosquitto 2>/dev/null; then
         sudo systemctl stop mosquitto 2>/dev/null || true
     fi
-    for port in "$esp32_port" "$nemo_port" 9001; do
+    for port in "$esp32_port" "$nemo_port"; do
         kill_port "$port"
     done
     sleep 3
@@ -101,7 +101,7 @@ ensure_mqtt_ports_free() {
     local esp32_port nemo_port
     esp32_port=$(get_esp32_port)
     nemo_port=$(get_nemo_port)
-    for port in "$esp32_port" "$nemo_port" 9001; do
+    for port in "$esp32_port" "$nemo_port"; do
         kill_port "$port"
     done
     sleep 1

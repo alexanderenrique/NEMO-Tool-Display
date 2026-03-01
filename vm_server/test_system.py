@@ -58,7 +58,6 @@ def test_ports():
     ports = {
         f"ESP32 ({esp32_port})": check_port_listening(esp32_port),
         f"NEMO ({nemo_port})": check_port_listening(nemo_port),
-        "WebSocket (9001)": check_port_listening(9001)
     }
     
     all_good = True

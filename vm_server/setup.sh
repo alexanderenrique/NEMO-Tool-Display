@@ -129,8 +129,8 @@ stop_existing_processes() {
     # Kill anything on MQTT ports first (with sudo fallback for system mosquitto)
     ESP32_PORT=$(_get_esp32_port)
     NEMO_PORT=$(_get_nemo_port)
-    print_info "Clearing MQTT ports $ESP32_PORT, $NEMO_PORT, 9001..."
-    for port in $ESP32_PORT $NEMO_PORT 9001; do
+    print_info "Clearing MQTT ports $ESP32_PORT, $NEMO_PORT..."
+    for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
             lsof -ti :$port | xargs kill -9 2>/dev/null || true
             sleep 1
@@ -147,7 +147,7 @@ stop_existing_processes() {
         print_info "Stopping systemd Mosquitto service..."
         sudo systemctl stop mosquitto 2>/dev/null || true
     fi
-    for port in $ESP32_PORT $NEMO_PORT 9001; do
+    for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
             sudo lsof -ti :$port | xargs sudo kill -9 2>/dev/null || true
             sleep 1
@@ -464,16 +464,6 @@ EOF
     
     cat >> "$CONFIG_FILE" << EOF
 
-# WebSocket support (optional)
-listener 9001 0.0.0.0
-protocol websockets
-EOF
-    if [ "$USE_AUTH" = false ]; then
-        echo "allow_anonymous true" >> "$CONFIG_FILE"
-    fi
-    
-    cat >> "$CONFIG_FILE" << EOF
-
 # Connection settings
 max_connections 100
 max_inflight_messages 20
@@ -503,7 +493,7 @@ start_services() {
     # Ensure MQTT ports are free (kill by port with sudo fallback)
     ESP32_PORT=$(_get_esp32_port)
     NEMO_PORT=$(_get_nemo_port)
-    for port in $ESP32_PORT $NEMO_PORT 9001; do
+    for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
             print_info "Clearing port $port before starting broker..."
             lsof -ti :$port | xargs kill -9 2>/dev/null || true
@@ -704,21 +694,19 @@ main() {
     # Install Mosquitto
     install_mosquitto
     
-    # Stop existing processes
+    # Configure ports and auth first so we clear only those ports
+    echo ""
+    print_header "Configuration"
+    write_config_env
+    setup_broker_auth
+    
+    # Stop existing processes (clears only the configured ports)
     stop_existing_processes
     
     # Setup Python environment
     setup_python_environment
     
-    # Generate HMAC key and write config.env
-    echo ""
-    print_header "Configuration"
-    write_config_env
-    
-    # Optionally set up broker authentication (username/password in passwd file)
-    setup_broker_auth
-    
-    # Create Mosquitto configuration
+    # Create Mosquitto configuration (uses ports from config.env)
     create_mosquitto_config
     
     # Display VM IP address for NEMO configuration (so user can copy it)

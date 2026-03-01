@@ -21,7 +21,7 @@ if systemctl is-active --quiet mosquitto 2>/dev/null; then
 fi
 
 # Free ports
-for port in $ESP32_PORT $NEMO_PORT 9001; do
+for port in $ESP32_PORT $NEMO_PORT; do
     if lsof -ti :$port >/dev/null 2>&1; then
         echo "Freeing port $port..."
         lsof -ti :$port | xargs kill -9 2>/dev/null && echo "✓ Port $port freed"
