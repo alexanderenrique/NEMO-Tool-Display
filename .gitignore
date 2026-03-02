@@ -31,7 +31,7 @@ ENV/
 .env.local
 .env.*.local
 config.env
-src/config.h
+Display-Code/src/config.h
 
 # IDE
 .vscode/

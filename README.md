@@ -17,13 +17,13 @@ The setup script will:
 - Start MQTT broker and NEMO server
 
 ### 2. ESP32 Configuration
-Edit `src/config.h` with your WiFi SSID/password, MQTT broker and credentials, and tool name (e.g. `TARGET_TOOL_NAME`).
+Edit `Display-Code/src/config.h` with your WiFi SSID/password, MQTT broker and credentials, and tool name (e.g. `TARGET_TOOL_NAME`).
 
 **⚠️ SECURITY WARNING:** Never commit real WiFi credentials, MQTT passwords, or IP addresses to version control!
 
 ### 3. Upload Firmware
 ```bash
-pio run -t upload
+cd Display-Code && pio run -t upload
 ```
 
 ## Hardware Connections
@@ -59,8 +59,8 @@ VCC
 The system uses **centralized configuration** to ensure consistency between ESP32 and VM server:
 
 ### Centralized Configuration System
-- **`src/config.h`** - Single configuration file (WiFi, MQTT, tool, display; not overridden by build flags)
-- **`vm_server/config_parser.py`** - Python parser that reads from `src/config.h`
+- **`Display-Code/src/config.h`** - Single configuration file (WiFi, MQTT, tool, display; not overridden by build flags)
+- **`vm_server/config_parser.py`** - Python parser that reads from `Display-Code/src/config.h`
 
 ### VM Server (config.env)
 ```env
@@ -76,13 +76,13 @@ MAX_NAME_LENGTH=13
 LOG_LEVEL=INFO
 ```
 
-### ESP32 (src/config.h)
-All ESP32 settings (WiFi, MQTT broker/port/credentials, tool ID/name, display) are in `src/config.h`. When broker authentication is enabled on the VM server, set `MQTT_USERNAME` and `MQTT_PASSWORD` in `src/config.h` to match `vm_server/config.env`.
+### ESP32 (Display-Code/src/config.h)
+All ESP32 settings (WiFi, MQTT broker/port/credentials, tool ID/name, display) are in `Display-Code/src/config.h`. When broker authentication is enabled on the VM server, set `MQTT_USERNAME` and `MQTT_PASSWORD` in `Display-Code/src/config.h` to match `vm_server/config.env`.
 
 ### Port Configuration
 - **ESP32 Port (1883)**: Used by ESP32 displays to receive status updates
 - **NEMO Port (1886)**: Used by VM server to receive messages from NEMO backend
-- **Configuration**: ESP32 port in `src/config.h`, NEMO port in `config.env`
+- **Configuration**: ESP32 port in `Display-Code/src/config.h`, NEMO port in `config.env`
 
 Tool names are provided in MQTT messages from NEMO; no separate tool lookup or mapping file is required.
 
@@ -164,8 +164,8 @@ Verification uses the same secret (UTF-8), hashes the `payload` string as-is (UT
 11. **Start NEMO Server** - Launch Python application
 
 ### ESP32 Setup Steps
-1. **Configure WiFi** - Set SSID and password in `src/config.h`
-2. **Configure MQTT** - Set broker IP and port in `src/config.h`
+1. **Configure WiFi** - Set SSID and password in `Display-Code/src/config.h`
+2. **Configure MQTT** - Set broker IP and port in `Display-Code/src/config.h`
 3. **Set Tool Name** - Specify which tool this display shows
 4. **Upload Firmware** - Compile and flash to ESP32
 
@@ -173,12 +173,12 @@ Verification uses the same secret (UTF-8), hashes the `payload` string as-is (UT
 
 ### ESP32 Issues
 **Can't connect to WiFi:**
-- Check WiFi credentials in `src/config.h`
+- Check WiFi credentials in `Display-Code/src/config.h`
 - Verify network is 2.4GHz (ESP32 doesn't support 5GHz)
 - Check signal strength
 
 **Can't connect to MQTT:**
-- Verify MQTT broker IP address in `src/config.h`
+- Verify MQTT broker IP address in `Display-Code/src/config.h`
 - Check MQTT port (1883 for ESP32, 1886 for NEMO backend)
 - Ensure ESP32 and server are on same network
 - Check MQTT broker IP and port match the server
@@ -325,13 +325,13 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 │   │   ├── data/               # Persistence data
 │   │   └── log/                # Log files
 │   └── venv/                   # Python virtual environment
-├── src/main.cpp                # ESP32 firmware
-├── src/config.h                # ESP32 configuration (single source)
-├── include/                    # ESP32 headers
-│   └── lv_conf.h              # LVGL configuration
-├── lib/                       # ESP32 libraries
-├── platformio.ini             # Build configuration
-└── README.md                  # This file
+├── Display-Code/               # PlatformIO / ESP32 firmware
+│   ├── src/main.cpp            # ESP32 firmware
+│   ├── src/config.h            # ESP32 configuration (single source)
+│   ├── include/lv_conf.h        # LVGL configuration
+│   ├── lib/                    # ESP32 libraries
+│   └── platformio.ini           # Build configuration
+└── README.md                   # This file
 ```
 
 ## Security Notes
@@ -339,7 +339,7 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 ### 🔒 **CRITICAL SECURITY REQUIREMENTS**
 
 1. **Never commit real credentials to version control:**
-   - WiFi SSID and password in `src/config.h`
+   - WiFi SSID and password in `Display-Code/src/config.h`
    - MQTT broker IP addresses
    - NEMO API tokens in `config.env`
    - Any other sensitive configuration
