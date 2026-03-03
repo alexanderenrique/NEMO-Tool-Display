@@ -24,7 +24,11 @@ class ConfigParser:
     def _parse_config(self):
         """Parse the config.h file and extract #define values"""
         if not self.config_h_path.exists():
-            raise FileNotFoundError(f"Config file not found: {self.config_h_path}")
+            # If the config file is missing (e.g. on a VM that only runs
+            # the broker/display server), fall back to environment variables
+            # and hard-coded defaults instead of failing hard.
+            self._config = {}
+            return
         
         with open(self.config_h_path, 'r') as f:
             content = f.read()
