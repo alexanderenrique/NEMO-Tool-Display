@@ -64,6 +64,11 @@ get_nemo_port() {
     echo "$MQTT_PORT"  # NEMO port from config.env
 }
 
+# Get all MQTT ports from config (space-separated for loops)
+get_mqtt_ports() {
+    echo "$(get_esp32_port) $(get_nemo_port)"
+}
+
 # Ensure MQTT directories and files have correct permissions for the user running Mosquitto
 ensure_mqtt_permissions() {
     mkdir -p "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"
@@ -97,45 +102,50 @@ kill_port() {
     fi
 }
 
-# Ensure all MQTT ports are free (run before starting broker).
-kill_processes_on_mqtt_ports() {
-    local esp32_port nemo_port
+# Phase 1: Close all MQTT ports from config and kill every process using them.
+# Run this first so the broker can bind to localhost later.
+close_mqtt_ports_and_kill_connections() {
+    local ports esp32_port nemo_port
     esp32_port=$(get_esp32_port)
     nemo_port=$(get_nemo_port)
-    print_info "Clearing MQTT ports $esp32_port, $nemo_port..."
-    for port in "$esp32_port" "$nemo_port"; do
+    ports="$esp32_port $nemo_port"
+    print_info "Closing MQTT ports from config: $esp32_port, $nemo_port"
+    # Kill processes by port (listeners and connections)
+    for port in $ports; do
         kill_port "$port"
     done
+    # Kill broker by name so we don't leave a daemon
     pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
     pkill mosquitto 2>/dev/null || true
     pkill -9 mosquitto 2>/dev/null || true
     if systemctl is-active --quiet mosquitto 2>/dev/null; then
         sudo systemctl stop mosquitto 2>/dev/null || true
     fi
-    for port in "$esp32_port" "$nemo_port"; do
+    # Kill NEMO / Python services that use MQTT
+    pkill -f "python.*main\.py" 2>/dev/null || true
+    pkill -f "python.*manage\.py" 2>/dev/null || true
+    pkill -f "python.*nemo" 2>/dev/null || true
+    pkill -f "mosquitto_sub" 2>/dev/null || true
+    # Ensure ports are really free (second pass)
+    for port in $ports; do
         kill_port "$port"
     done
-    sleep 3
-}
-
-# Lightweight: only kill by port (no long sleep). Use right before starting broker.
-ensure_mqtt_ports_free() {
-    local esp32_port nemo_port
-    esp32_port=$(get_esp32_port)
-    nemo_port=$(get_nemo_port)
-    for port in "$esp32_port" "$nemo_port"; do
-        kill_port "$port"
-    done
-    sleep 1
+    sleep 2
+    print_success "MQTT ports closed and connections killed"
 }
 
 # Wait for a port to be listening (with timeout). Returns 0 if ready, 1 if timeout.
+# Passive check only: see if something is bound to the port on this host (no outbound connect).
 wait_for_port() {
     local port="$1"
     local timeout="${2:-20}"
     local i
     for (( i = 0; i < timeout; i++ )); do
         if lsof -i :"$port" >/dev/null 2>&1; then
+            return 0
+        fi
+        # Linux fallback: ss shows listening ports without needing lsof
+        if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":${port} "; then
             return 0
         fi
         sleep 1
@@ -146,44 +156,48 @@ wait_for_port() {
 # Function to kill all NEMO processes
 kill_all_processes() {
     print_info "Stopping all NEMO-related processes..."
-    # Free MQTT ports first (and kill mosquitto by name) so broker can bind later
-    kill_processes_on_mqtt_ports
-    pkill -f "python.*main\.py" 2>/dev/null || true
-    pkill -f "python.*manage\.py" 2>/dev/null || true
-    pkill -f "python.*nemo" 2>/dev/null || true
-    pkill -f "mosquitto_sub" 2>/dev/null || true
-    print_success "All processes stopped"
+    close_mqtt_ports_and_kill_connections
 }
 
 # Function to start services
 start_services() {
-    # Start MQTT broker
-    print_info "Starting MQTT broker..."
-    
-    # Ensure MQTT ports are free right before starting (in case something bound in between)
-    ensure_mqtt_ports_free
-    
+    local esp32_port nemo_port
+    esp32_port=$(get_esp32_port)
+    nemo_port=$(get_nemo_port)
+
+    # One more pass so nothing bound to ports between phase 1 and 2
+    print_info "Ensuring MQTT ports $esp32_port, $nemo_port are free..."
+    for port in $esp32_port $nemo_port; do
+        kill_port "$port"
+    done
+    sleep 1
+
     # Ensure MQTT dirs and files have correct permissions so Mosquitto can read passwd and write log
     ensure_mqtt_permissions
-    
+
+    # Start MQTT broker (passive: binds to localhost on config ports)
+    print_info "Starting MQTT broker on localhost:$esp32_port, localhost:$nemo_port..."
+    echo "=== quick_restart.sh $(date) ===" >> "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
     mosquitto -c "$CONFIG_FILE" -d
-    nemo_port=$(get_nemo_port)
+
     if ! wait_for_port "$nemo_port" 15; then
         print_error "MQTT broker did not start (port $nemo_port not listening after 15s)"
         if [ -f "$MQTT_LOG_DIR/mosquitto.log" ]; then
-            print_info "Last lines of mosquitto.log:"
-            tail -n 20 "$MQTT_LOG_DIR/mosquitto.log" | sed 's/^/  /'
+            print_info "Last lines of mosquitto.log (from this run):"
+            tail -n 25 "$MQTT_LOG_DIR/mosquitto.log" | sed 's/^/  /'
         fi
+        print_info "Attempting to start broker in foreground to capture error:"
+        timeout 3 mosquitto -c "$CONFIG_FILE" 2>&1 | sed 's/^/  /' || true
         return 1
     fi
-    print_success "MQTT broker is listening on port $nemo_port"
-    
-    # Start NEMO server
+    print_success "MQTT broker listening on localhost:$esp32_port, localhost:$nemo_port"
+
+    # Start NEMO server (connects to localhost / MQTT_BROKER)
     print_info "Starting NEMO server..."
     source venv/bin/activate
     python3 main.py &
     sleep 3
-    
+
     print_success "Services started"
 }
 
@@ -221,29 +235,24 @@ show_status() {
 # Main execution
 main() {
     print_header "NEMO Quick Restart"
-    
-    # Change to script directory
     cd "$SCRIPT_DIR"
-    
-    # Display configuration
+
     print_info "Configuration loaded from config.env:"
     print_info "  MQTT_BROKER: $MQTT_BROKER"
     print_info "  MQTT_PORT_ESP32: $MQTT_PORT_ESP32, MQTT_PORT (NEMO): $MQTT_PORT"
     echo ""
-    
-    # Kill all processes
+
+    # Phase 1: Close all MQTT ports from config and kill connections
     kill_all_processes
-    
-    # Start services (wait for MQTT port before starting NEMO)
+
+    # Phase 2: Start broker on those localhost ports, then NEMO
     if ! start_services; then
         show_status
         print_error "Could not start services. Check mosquitto log above."
         exit 1
     fi
-    
-    # Show status
+
     show_status
-    
     print_success "Quick restart completed!"
     print_info "Monitor: python3 mqtt_monitor.py"
     print_info "Test: python3 test_system.py"
