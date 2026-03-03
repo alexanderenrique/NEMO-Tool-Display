@@ -23,7 +23,22 @@ if git ls-files -u | grep -q .; then
 fi
 
 echo "Stashing mosquitto config and data..."
-git stash push -m "mosquitto config before pull" -- vm_server/mqtt/config/mosquitto.conf vm_server/mqtt/data/mosquitto.db
+
+# Only stash files that are actually tracked in this repo. On older checkouts or
+# fresh installs these paths may not exist yet, which would otherwise cause a
+# pathspec error ("Did you forget to 'git add'?").
+STASH_PATHS=()
+for f in vm_server/mqtt/config/mosquitto.conf vm_server/mqtt/data/mosquitto.db; do
+  if git ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+    STASH_PATHS+=("$f")
+  fi
+done
+
+if [ "${#STASH_PATHS[@]}" -gt 0 ]; then
+  git stash push -m "mosquitto config before pull" -- "${STASH_PATHS[@]}"
+else
+  echo "No tracked mosquitto config/data files to stash (skipping mosquitto stash step)."
+fi
 
 echo "Pulling latest from origin main..."
 git fetch origin main

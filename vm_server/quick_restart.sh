@@ -16,6 +16,8 @@ NC='\033[0m' # No Color
 # Configuration variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MQTT_CONFIG_DIR="$SCRIPT_DIR/mqtt/config"
+MQTT_DATA_DIR="$SCRIPT_DIR/mqtt/data"
+MQTT_LOG_DIR="$SCRIPT_DIR/mqtt/log"
 CONFIG_FILE="$MQTT_CONFIG_DIR/mosquitto.conf"
 
 # Load configuration from config.env
@@ -60,6 +62,26 @@ get_esp32_port() {
 
 get_nemo_port() {
     echo "$MQTT_PORT"  # NEMO port from config.env
+}
+
+# Ensure MQTT directories and files have correct permissions for the user running Mosquitto
+ensure_mqtt_permissions() {
+    mkdir -p "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"
+    if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
+        chown -R "$SUDO_UID:$SUDO_GID" "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
+    fi
+    chmod 755 "$MQTT_CONFIG_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
+    chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
+    if [ -f "$MQTT_CONFIG_DIR/passwd" ]; then
+        chmod 600 "$MQTT_CONFIG_DIR/passwd" 2>/dev/null || true
+        [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && chown "$SUDO_UID:$SUDO_GID" "$MQTT_CONFIG_DIR/passwd" 2>/dev/null || true
+    fi
+    touch "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
+    chmod 644 "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
+    [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && chown "$SUDO_UID:$SUDO_GID" "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
+    if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
+        chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
+    fi
 }
 
 # Kill any process bound to a given port; use sudo if needed.
@@ -127,14 +149,8 @@ start_services() {
     # Ensure MQTT ports are free right before starting (in case something bound in between)
     ensure_mqtt_ports_free
     
-    # Fix permissions on data directory before starting
-    MQTT_DATA_DIR="$SCRIPT_DIR/mqtt/data"
-    if [ -d "$MQTT_DATA_DIR" ]; then
-        chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
-        if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
-            chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
-        fi
-    fi
+    # Ensure MQTT dirs and files have correct permissions so Mosquitto can read passwd and write log
+    ensure_mqtt_permissions
     
     mosquitto -c "$CONFIG_FILE" -d
     sleep 3

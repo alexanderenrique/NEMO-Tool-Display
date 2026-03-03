@@ -384,6 +384,27 @@ setup_broker_auth() {
     print_info "Broker will use allow_anonymous false and password_file"
 }
 
+# Function to ensure MQTT directories and files have correct permissions for the user running Mosquitto
+ensure_mqtt_permissions() {
+    mkdir -p "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"
+    # When run with sudo (e.g. after deploy to /opt), give ownership to the invoking user
+    if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
+        chown -R "$SUDO_UID:$SUDO_GID" "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
+    fi
+    chmod 755 "$MQTT_CONFIG_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
+    chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
+    if [ -f "$MQTT_CONFIG_DIR/passwd" ]; then
+        chmod 600 "$MQTT_CONFIG_DIR/passwd" 2>/dev/null || true
+        [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && chown "$SUDO_UID:$SUDO_GID" "$MQTT_CONFIG_DIR/passwd" 2>/dev/null || true
+    fi
+    touch "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
+    chmod 644 "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
+    [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && chown "$SUDO_UID:$SUDO_GID" "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
+    if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
+        chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
+    fi
+}
+
 # Function to create Mosquitto configuration
 create_mosquitto_config() {
     print_header "Creating Mosquitto Configuration"
@@ -391,12 +412,8 @@ create_mosquitto_config() {
     # Create necessary directories
     mkdir -p "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"
     
-    # Fix permissions on data directory (Mosquitto requires secure permissions)
-    chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
-    # Fix permissions on any existing database file
-    if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
-        chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
-    fi
+    # Ensure correct permissions so Mosquitto can read config/passwd and write log
+    ensure_mqtt_permissions
     
     # Get ports from config.env (set by write_config_env)
     ESP32_PORT=$(_get_esp32_port)
@@ -517,11 +534,8 @@ start_services() {
         return 1
     fi
     
-    # Fix permissions on data directory before starting
-    chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
-    if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
-        chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
-    fi
+    # Ensure MQTT dirs and files have correct permissions before starting
+    ensure_mqtt_permissions
     
     # Try to start Mosquitto and capture any errors
     MOSQUITTO_ERROR=$(mosquitto -c "$CONFIG_FILE" -d 2>&1)
