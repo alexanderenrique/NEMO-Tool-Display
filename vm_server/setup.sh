@@ -405,6 +405,26 @@ ensure_mqtt_permissions() {
     fi
 }
 
+# Decide how to run Mosquitto: as current user, or as the user who ran sudo (so broker can read passwd and write log)
+# Usage: run_mosquitto "mosquitto" "-c" "$CONFIG_FILE" "-d"  (pass arguments after the broker binary)
+run_mosquitto() {
+    if [ "$(id -u)" = "0" ] && [ -n "${SUDO_UID:-}" ]; then
+        local run_user
+        run_user=$(id -un "$SUDO_UID" 2>/dev/null || true)
+        if [ -n "$run_user" ]; then
+            if command -v runuser >/dev/null 2>&1; then
+                runuser -u "$run_user" -- "$@"
+                return
+            fi
+            if command -v sudo >/dev/null 2>&1; then
+                sudo -u "$run_user" "$@"
+                return
+            fi
+        fi
+    fi
+    "$@"
+}
+
 # Function to create Mosquitto configuration
 create_mosquitto_config() {
     print_header "Creating Mosquitto Configuration"
@@ -536,9 +556,9 @@ start_services() {
     
     # Ensure MQTT dirs and files have correct permissions before starting
     ensure_mqtt_permissions
-    
-    # Try to start Mosquitto and capture any errors
-    MOSQUITTO_ERROR=$(mosquitto -c "$CONFIG_FILE" -d 2>&1)
+
+    # Try to start Mosquitto and capture any errors (run as invoking user when using sudo so broker can access log/passwd)
+    MOSQUITTO_ERROR=$(run_mosquitto mosquitto -c "$CONFIG_FILE" -d 2>&1)
     MOSQUITTO_EXIT=$?
     
     sleep 3
@@ -564,7 +584,7 @@ start_services() {
         print_info "Attempting to start Mosquitto in foreground to see errors..."
         print_info "Running: mosquitto -c $CONFIG_FILE"
         print_warning "If Mosquitto starts successfully, press Ctrl+C and check the error above"
-        mosquitto -c "$CONFIG_FILE" 2>&1 | head -20 || true
+        run_mosquitto mosquitto -c "$CONFIG_FILE" 2>&1 | head -20 || true
         
         return 1
     fi
