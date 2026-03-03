@@ -129,6 +129,20 @@ ensure_mqtt_ports_free() {
     sleep 1
 }
 
+# Wait for a port to be listening (with timeout). Returns 0 if ready, 1 if timeout.
+wait_for_port() {
+    local port="$1"
+    local timeout="${2:-20}"
+    local i
+    for (( i = 0; i < timeout; i++ )); do
+        if lsof -i :"$port" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 # Function to kill all NEMO processes
 kill_all_processes() {
     print_info "Stopping all NEMO-related processes..."
@@ -153,7 +167,16 @@ start_services() {
     ensure_mqtt_permissions
     
     mosquitto -c "$CONFIG_FILE" -d
-    sleep 3
+    nemo_port=$(get_nemo_port)
+    if ! wait_for_port "$nemo_port" 15; then
+        print_error "MQTT broker did not start (port $nemo_port not listening after 15s)"
+        if [ -f "$MQTT_LOG_DIR/mosquitto.log" ]; then
+            print_info "Last lines of mosquitto.log:"
+            tail -n 20 "$MQTT_LOG_DIR/mosquitto.log" | sed 's/^/  /'
+        fi
+        return 1
+    fi
+    print_success "MQTT broker is listening on port $nemo_port"
     
     # Start NEMO server
     print_info "Starting NEMO server..."
@@ -211,8 +234,12 @@ main() {
     # Kill all processes
     kill_all_processes
     
-    # Start services
-    start_services
+    # Start services (wait for MQTT port before starting NEMO)
+    if ! start_services; then
+        show_status
+        print_error "Could not start services. Check mosquitto log above."
+        exit 1
+    fi
     
     # Show status
     show_status
