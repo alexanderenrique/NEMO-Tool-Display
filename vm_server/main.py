@@ -597,6 +597,70 @@ class NEMOToolServer:
             
             # Extract tool_name from payload for display purposes only
             tool_name = tool_data.get('tool_name', tool_identifier)
+
+            # ----- Separate messages: operational and tasks (independent of status) -----
+            if event_type == "non-operational":
+                operational = tool_data.get("operational", False)
+                timestamp_val = tool_data.get("timestamp", datetime.utcnow().isoformat() + "+00:00")
+                esp32_operational = {
+                    "operational": operational,
+                    "tool_id": tool_id,
+                    "tool_name": tool_name,
+                    "timestamp": timestamp_val,
+                }
+                esp32_topic = f"nemo/esp32/{tool_id}/operational"
+                payload_json = json.dumps(esp32_operational)
+                logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
+                result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    logger.info(f"✅ {tool_name} (ID: {tool_id}): operational={operational} → ESP32")
+                else:
+                    logger.error(f"❌ Failed to forward operational: {result.rc}")
+                return
+
+            if event_type == "operational":
+                # Tool back to operational (e.g. nemo/tools/1/operational with operational: true)
+                operational = tool_data.get("operational", True)
+                timestamp_val = tool_data.get("timestamp", datetime.utcnow().isoformat() + "+00:00")
+                esp32_operational = {
+                    "operational": operational,
+                    "tool_id": tool_id,
+                    "tool_name": tool_name,
+                    "timestamp": timestamp_val,
+                }
+                esp32_topic = f"nemo/esp32/{tool_id}/operational"
+                payload_json = json.dumps(esp32_operational)
+                logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
+                result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    logger.info(f"✅ {tool_name} (ID: {tool_id}): operational={operational} → ESP32")
+                else:
+                    logger.error(f"❌ Failed to forward operational: {result.rc}")
+                return
+
+            if event_type == "tasks":
+                event_name = tool_data.get("event", "task")
+                task_id = tool_data.get("task_id")
+                problem_desc = tool_data.get("problem_description", "")
+                task_summary = tool_data.get("task_summary") or tool_data.get("description") or event_name
+                if not isinstance(task_summary, str):
+                    task_summary = str(task_summary) if task_summary is not None else ""
+                esp32_task = {
+                    "event": event_name,
+                    "task_id": task_id,
+                    "tool_id": tool_id,
+                    "task_summary": task_summary,
+                    "problem_description": problem_desc,
+                }
+                esp32_topic = f"nemo/esp32/{tool_id}/task"
+                payload_json = json.dumps(esp32_task)
+                logger.info(f"📤 outbound {esp32_topic} | (task_id={task_id}, summary len={len(task_summary)}, problem_description len={len(problem_desc)})")
+                result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    logger.info(f"✅ {tool_name} (ID: {tool_id}): task → ESP32")
+                else:
+                    logger.error(f"❌ Failed to forward task: {result.rc}")
+                return
             
             # Extract user name from NEMO message
             full_user_name = tool_data.get('user_name', '')

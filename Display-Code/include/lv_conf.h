@@ -38,7 +38,7 @@
 
 /* Feature usage - Only include features actually used */
 #define LV_USE_ANIMATION 0  // Not used in simple display
-#define LV_USE_EXTRA 0      // Disable all extra features
+#define LV_USE_EXTRA 1      // Enable extra widgets (e.g. tabview for problem description screen)
 #define LV_USE_LAYOUTS 0    // Disable layouts
 #define LV_USE_LOGS 0       // Disable logs
 #define LV_USE_MEM_MONITOR 0 // Disable memory monitor
@@ -57,7 +57,7 @@
 #define LV_USE_BTN 0      // Button - not used
 #define LV_USE_LABEL 1    // All text labels - USED
 #define LV_USE_ARC 0      // Arc - not used
-#define LV_USE_BTNMATRIX 0 // Button matrix - not used
+#define LV_USE_BTNMATRIX 1 // Button matrix - used by tabview for tab bar
 #define LV_USE_CANVAS 0   // Canvas - not used
 #define LV_USE_CHECKBOX 0 // Checkbox - not used
 #define LV_USE_DROPDOWN 0 // Dropdown - not used
@@ -84,7 +84,7 @@
 #define LV_USE_SPAN 0
 #define LV_USE_SPINBOX 0
 #define LV_USE_SPINNER 0
-#define LV_USE_TABVIEW 0
+#define LV_USE_TABVIEW 1
 #define LV_USE_TILEVIEW 0
 #define LV_USE_WIN 0
 

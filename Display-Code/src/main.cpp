@@ -15,7 +15,16 @@
 
 // MQTT topics - use tool ID and prefix from build flags
 String mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/status";
+String mqtt_topic_operational = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/operational";
+String mqtt_topic_task = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/task";
 String mqtt_topic_overall = String(MQTT_TOPIC_PREFIX) + "/overall";
+
+// State from separate MQTT messages (operational and task)
+bool tool_operational = true;
+bool has_task = false;
+String task_summary = "";
+String problem_description = "";
+bool last_status_enabled = false;  // From last status message; used for border when operational
 
 // Display configuration (TFT 480x320)
 TFT_eSPI tft = TFT_eSPI();
@@ -32,6 +41,7 @@ static lv_color_t buf[480 * 10]; // 10 lines buffer
 static lv_disp_drv_t disp_drv;
 
 // LVGL UI elements
+lv_obj_t *tabview = nullptr;
 lv_obj_t *title_label = nullptr;
 lv_obj_t *status_label = nullptr;
 lv_obj_t *user_label = nullptr;
@@ -39,6 +49,11 @@ lv_obj_t *user_value = nullptr;
 lv_obj_t *time_label = nullptr;
 lv_obj_t *time_value = nullptr;
 lv_obj_t *status_indicator = nullptr;
+lv_obj_t *normal_container = nullptr;       // Shown when tool is operational
+lv_obj_t *non_operational_container = nullptr;  // Full red screen when non-operational
+lv_obj_t *non_operational_title = nullptr;
+lv_obj_t *non_operational_task_label = nullptr;
+lv_obj_t *problem_description_label = nullptr;  // Tab 2 - full problem_description
 
 // Tool name from config
 String toolDisplayName = "";
@@ -54,7 +69,8 @@ void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data);
 void create_simple_ui();
 String capitalizeToolName(const char* toolName);
 void updateConnectionStatus();
-void updateStatusIndicator(bool isEnabled);
+void updateStatusIndicator(bool isEnabled, bool hasTask = false);
+void applyMainScreenState();  // Show/hide normal vs non-operational, set border color
 
 void setup() {
   Serial.begin(9600);
@@ -65,10 +81,16 @@ void setup() {
   Serial.print("Tool Display Name: ");
   Serial.println(toolDisplayName);
   
-  // Initialize MQTT topic with tool ID and prefix from build flags
+  // Initialize MQTT topics with tool ID and prefix from build flags
   mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/status";
+  mqtt_topic_operational = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/operational";
+  mqtt_topic_task = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/task";
   Serial.print("MQTT Status Topic: ");
   Serial.println(mqtt_topic_status);
+  Serial.print("MQTT Operational Topic: ");
+  Serial.println(mqtt_topic_operational);
+  Serial.print("MQTT Task Topic: ");
+  Serial.println(mqtt_topic_task);
   
   // Initialize TFT display
   tft.init();
@@ -234,81 +256,118 @@ void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data) {
   }
 }
 
-// Create simple LVGL UI
+// Create LVGL UI with tabview: tab 0 = Status (normal or non-operational), tab 1 = Problem description
 void create_simple_ui() {
-  // Color configuration variables
-  const uint32_t backgroundColor = 0xFFFFFF;  // White background
-  const uint32_t textColor = 0x000000;        // Black text
-  
-  // Font size configuration variables
+  const uint32_t backgroundColor = 0xFFFFFF;
+  const uint32_t textColor = 0x000000;
   const lv_font_t* titleFont = &lv_font_montserrat_48;
   const lv_font_t* statusFont = &lv_font_montserrat_16;
-  
-  // Label fonts (for field names)
   const lv_font_t* labelFont = &lv_font_montserrat_16;
-  
-  // Value fonts (for field values)
   const lv_font_t* valueFont = &lv_font_montserrat_32;
-  
-  // Create main container - use full screen
-  lv_obj_t *cont = lv_obj_create(lv_scr_act());
-  lv_obj_set_size(cont, 480, 320);  // Full screen size
-  lv_obj_set_pos(cont, 0, 0);       // Position at top-left corner
-  lv_obj_set_style_bg_color(cont, lv_color_hex(backgroundColor), 0);
-  lv_obj_set_style_border_width(cont, 0, 0);  // No border
-  lv_obj_set_style_radius(cont, 0, 0);        // No rounded corners
-  lv_obj_set_style_pad_all(cont, 0, 0);      // No padding so child (8,8) is true 8px from edge
-  lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_OFF);  // Disable scrollbars
-  // Small buffer between display edge and colored border
   const int screenMargin = 8;
-  // Status indicator: full screen minus margin, thick red/green border, white interior
-  status_indicator = lv_obj_create(cont);
-  lv_obj_set_size(status_indicator, 480 - 2 * screenMargin, 320 - 2 * screenMargin);
+
+  // Tabview: two tabs, small tab bar (swipe between tabs)
+  tabview = lv_tabview_create(lv_scr_act(), LV_DIR_TOP, 28);
+  lv_obj_t *tab_status = lv_tabview_add_tab(tabview, "Status");
+  lv_obj_t *tab_problem = lv_tabview_add_tab(tabview, "Details");
+
+  // ---- Tab 0: Status ----
+  // Normal container (white interior, colored border, user/time labels)
+  normal_container = lv_obj_create(tab_status);
+  lv_obj_set_size(normal_container, DISPLAY_WIDTH, DISPLAY_HEIGHT - 28);
+  lv_obj_set_pos(normal_container, 0, 0);
+  lv_obj_set_style_bg_color(normal_container, lv_color_hex(backgroundColor), 0);
+  lv_obj_set_style_border_width(normal_container, 0, 0);
+  lv_obj_set_style_pad_all(normal_container, 0, 0);
+  lv_obj_set_scrollbar_mode(normal_container, LV_SCROLLBAR_MODE_OFF);
+
+  status_indicator = lv_obj_create(normal_container);
+  lv_obj_set_size(status_indicator, DISPLAY_WIDTH - 2 * screenMargin, (DISPLAY_HEIGHT - 28) - 2 * screenMargin);
   lv_obj_set_pos(status_indicator, screenMargin, screenMargin);
-  lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFFFFFF), 0);  // White interior
-  lv_obj_set_style_border_width(status_indicator, 20, 0);  // Thick border (~2x previous)
-  lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFF0000), 0);  // Start red (disabled)
+  lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_border_width(status_indicator, 20, 0);
+  lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFF0000), 0);
   lv_obj_set_style_radius(status_indicator, 0, 0);
-  lv_obj_set_style_pad_all(status_indicator, 8, 0);  // Padding so text sits inside border
+  lv_obj_set_style_pad_all(status_indicator, 8, 0);
   lv_obj_set_scrollbar_mode(status_indicator, LV_SCROLLBAR_MODE_OFF);
   lv_obj_clear_flag(status_indicator, LV_OBJ_FLAG_SCROLLABLE);
-  // Title label - tool name inside left box, left-aligned
+
   title_label = lv_label_create(status_indicator);
   lv_label_set_text(title_label, toolDisplayName.c_str());
   lv_obj_set_style_text_font(title_label, titleFont, 0);
   lv_obj_set_style_text_color(title_label, lv_color_hex(textColor), 0);
   lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 0, 0);
-  // User label - inside left box, left-aligned
+
   user_label = lv_label_create(status_indicator);
   lv_label_set_text(user_label, "User");
   lv_obj_set_style_text_font(user_label, labelFont, 0);
   lv_obj_set_style_text_color(user_label, lv_color_hex(textColor), 0);
   lv_obj_align(user_label, LV_ALIGN_TOP_LEFT, 0, 55);
-  // User value - inside left box, left-aligned
+
   user_value = lv_label_create(status_indicator);
   lv_label_set_text(user_value, "--");
   lv_obj_set_style_text_font(user_value, valueFont, 0);
   lv_obj_set_style_text_color(user_value, lv_color_hex(textColor), 0);
   lv_obj_align(user_value, LV_ALIGN_TOP_LEFT, 0, 72);
-  // Time label - inside left box, left-aligned
+
   time_label = lv_label_create(status_indicator);
   lv_label_set_text(time_label, "Enabled/Disabled Since");
   lv_obj_set_style_text_font(time_label, labelFont, 0);
   lv_obj_set_style_text_color(time_label, lv_color_hex(textColor), 0);
   lv_obj_align(time_label, LV_ALIGN_TOP_LEFT, 0, 140);
-  // Time value - inside left box, left-aligned
+
   time_value = lv_label_create(status_indicator);
   lv_label_set_text(time_value, "--:--");
   lv_obj_set_style_text_font(time_value, valueFont, 0);
   lv_obj_set_style_text_color(time_value, lv_color_hex(textColor), 0);
   lv_obj_align(time_value, LV_ALIGN_TOP_LEFT, 0, 162);
-  // Status label - WiFi/MQTT status, left-aligned at bottom inside bordered box
+
   status_label = lv_label_create(status_indicator);
   lv_label_set_text(status_label, "Initializing...");
   lv_obj_set_style_text_font(status_label, statusFont, 0);
   lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
   lv_obj_align(status_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-  Serial.println("Simple LVGL UI created successfully!");
+
+  // Non-operational overlay (full red screen, white text) - same tab, shown when !tool_operational
+  non_operational_container = lv_obj_create(tab_status);
+  lv_obj_set_size(non_operational_container, DISPLAY_WIDTH, DISPLAY_HEIGHT - 28);
+  lv_obj_set_pos(non_operational_container, 0, 0);
+  lv_obj_set_style_bg_color(non_operational_container, lv_color_hex(0xFF0000), 0);
+  lv_obj_set_style_border_width(non_operational_container, 0, 0);
+  lv_obj_set_style_pad_all(non_operational_container, 16, 0);
+  lv_obj_set_scrollbar_mode(non_operational_container, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_add_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);  // Shown only when non-operational
+
+  non_operational_title = lv_label_create(non_operational_container);
+  String nonOpText = toolDisplayName + " is non-operational";
+  lv_label_set_text(non_operational_title, nonOpText.c_str());
+  lv_obj_set_style_text_font(non_operational_title, titleFont, 0);
+  lv_obj_set_style_text_color(non_operational_title, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(non_operational_title, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_label_set_long_mode(non_operational_title, LV_LABEL_LONG_WRAP);
+
+  non_operational_task_label = lv_label_create(non_operational_container);
+  lv_label_set_text(non_operational_task_label, "");
+  lv_obj_set_style_text_font(non_operational_task_label, valueFont, 0);
+  lv_obj_set_style_text_color(non_operational_task_label, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(non_operational_task_label, LV_ALIGN_TOP_LEFT, 0, 70);
+  lv_label_set_long_mode(non_operational_task_label, LV_LABEL_LONG_WRAP);
+
+  // ---- Tab 1: Problem description (full text, scrollable) ----
+  lv_obj_t *problem_scroll = lv_obj_create(tab_problem);
+  lv_obj_set_size(problem_scroll, DISPLAY_WIDTH - 24, DISPLAY_HEIGHT - 28 - 24);
+  lv_obj_set_pos(problem_scroll, 12, 12);
+  lv_obj_set_style_border_width(problem_scroll, 0, 0);
+  lv_obj_set_scrollbar_mode(problem_scroll, LV_SCROLLBAR_MODE_AUTO);
+  problem_description_label = lv_label_create(problem_scroll);
+  lv_obj_set_width(problem_description_label, DISPLAY_WIDTH - 48);
+  lv_label_set_text(problem_description_label, "No problem description.");
+  lv_obj_set_style_text_font(problem_description_label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(problem_description_label, lv_color_hex(textColor), 0);
+  lv_label_set_long_mode(problem_description_label, LV_LABEL_LONG_WRAP);
+
+  applyMainScreenState();
+  Serial.println("LVGL UI created (tabview: Status + Details)");
 }
 
 // MQTT Setup
@@ -345,19 +404,20 @@ void connectMQTT() {
       Serial.print(":");
       Serial.println(mqtt_port);
       
-      // Subscribe to topics
+      // Subscribe to topics (status, operational, task, overall)
       bool sub1 = mqttClient.subscribe(mqtt_topic_status.c_str());
-      bool sub2 = mqttClient.subscribe(mqtt_topic_overall.c_str());
+      bool sub2 = mqttClient.subscribe(mqtt_topic_operational.c_str());
+      bool sub3 = mqttClient.subscribe(mqtt_topic_task.c_str());
+      bool sub4 = mqttClient.subscribe(mqtt_topic_overall.c_str());
       
-      Serial.print("Subscribe to status: ");
-      Serial.println(sub1 ? "SUCCESS" : "FAILED");
-      Serial.print("Subscribe to overall: ");
-      Serial.println(sub2 ? "SUCCESS" : "FAILED");
-      
-      Serial.print("Subscribed to: ");
-      Serial.println(mqtt_topic_status.c_str());
-      Serial.print("Subscribed to: ");
-      Serial.println(mqtt_topic_overall);
+      Serial.print("Subscribe status: ");
+      Serial.println(sub1 ? "OK" : "FAIL");
+      Serial.print("Subscribe operational: ");
+      Serial.println(sub2 ? "OK" : "FAIL");
+      Serial.print("Subscribe task: ");
+      Serial.println(sub3 ? "OK" : "FAIL");
+      Serial.print("Subscribe overall: ");
+      Serial.println(sub4 ? "OK" : "FAIL");
       
       // Update status
       updateConnectionStatus();
@@ -374,12 +434,13 @@ void connectMQTT() {
   }
 }
 
+// MQTT buffer: task payload can include long problem_description
+#define MQTT_MESSAGE_BUFFER_SIZE 2048
+
 // MQTT Callback
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  // Use a smaller buffer since we're now sending optimized messages
-  static char message[512]; // Optimized buffer size for lightweight messages
+  static char message[MQTT_MESSAGE_BUFFER_SIZE];
   
-  // Check if message fits in buffer
   if (length >= sizeof(message)) {
     Serial.print("Message too large: ");
     Serial.print(length);
@@ -387,7 +448,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
   
-  // Convert payload to string
   memcpy(message, payload, length);
   message[length] = '\0';
   
@@ -395,21 +455,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print(topic);
   Serial.print("] (");
   Serial.print(length);
-  Serial.print(" bytes) ");
-  Serial.println(message);
-  
-  // Debug: Show message size
-  Serial.print("ESP32 received message size: ");
-  Serial.print(length);
-  Serial.println(" bytes");
+  Serial.println(" bytes)");
   
   processMQTTMessage(topic, message);
 }
 
-// Process MQTT Message
+// Process MQTT Message (branch by topic: status, operational, task, overall)
 void processMQTTMessage(const char* topic, const char* payload) {
-  // Parse JSON with optimized buffer size
-  JsonDocument doc; // Use modern JsonDocument instead of StaticJsonDocument
+  JsonDocument doc;
   DeserializationError error = deserializeJson(doc, payload);
   
   if (error) {
@@ -418,81 +471,97 @@ void processMQTTMessage(const char* topic, const char* payload) {
     return;
   }
   
-  // Handle tool status messages (simplified format)
-  if (strcmp(topic, mqtt_topic_status.c_str()) == 0) {
-    Serial.println("Processing tool status message...");
+  // ---- Operational: independent message ----
+  if (strcmp(topic, mqtt_topic_operational.c_str()) == 0) {
+    tool_operational = doc["operational"] | true;
+    if (doc["tool_name"].is<const char*>()) {
+      toolDisplayName = capitalizeToolName(doc["tool_name"].as<const char*>());
+      if (non_operational_title)
+        lv_label_set_text(non_operational_title, (toolDisplayName + " is non-operational").c_str());
+      if (title_label)
+        lv_label_set_text(title_label, toolDisplayName.c_str());
+    }
+    applyMainScreenState();
+    Serial.print("Operational: ");
+    Serial.println(tool_operational ? "true" : "false");
+    return;
+  }
+  
+  // ---- Task: independent message (can be large - problem_description) ----
+  if (strcmp(topic, mqtt_topic_task.c_str()) == 0) {
+    if (doc["task_summary"].is<const char*>())
+      task_summary = doc["task_summary"].as<const char*>();
+    else
+      task_summary = "";
+    if (doc["problem_description"].is<const char*>())
+      problem_description = doc["problem_description"].as<const char*>();
+    else
+      problem_description = "";
+    has_task = (task_summary.length() > 0 || problem_description.length() > 0);
     
-    // Extract user name (now pre-joined from main.py)
+    if (problem_description_label) {
+      if (problem_description.length() > 0)
+        lv_label_set_text(problem_description_label, problem_description.c_str());
+      else
+        lv_label_set_text(problem_description_label, "No problem description.");
+    }
+    if (non_operational_task_label)
+      lv_label_set_text(non_operational_task_label, task_summary.c_str());
+    
+    applyMainScreenState();
+    Serial.print("Task: has_task=");
+    Serial.print(has_task ? "1" : "0");
+    Serial.println(" (summary + problem_description)");
+    return;
+  }
+  
+  // ---- Status: enable/disable, user, time (existing) ----
+  if (strcmp(topic, mqtt_topic_status.c_str()) == 0) {
     if (doc["user_name"].is<const char*>()) {
       const char* userName = doc["user_name"];
-      
       if (user_value) {
         lv_label_set_text(user_value, userName);
         lv_obj_set_style_text_color(user_value, lv_color_hex(0x000000), 0);
-        Serial.print("Updated user: ");
-        Serial.println(userName);
       }
     }
-    
-    
-    // Extract timestamp and time label (use payload values when present)
     if (doc["timestamp"].is<const char*>()) {
       const char* timestamp = doc["timestamp"];
       if (time_value) {
         lv_label_set_text(time_value, timestamp);
         lv_obj_set_style_text_color(time_value, lv_color_hex(0x000000), 0);
-        Serial.print("Updated time: ");
-        Serial.println(timestamp);
       }
     }
     if (doc["time_label"].is<const char*>()) {
       const char* timeLabelFromPayload = doc["time_label"];
-      if (time_label) {
-        lv_label_set_text(time_label, timeLabelFromPayload);
-      }
+      if (time_label) lv_label_set_text(time_label, timeLabelFromPayload);
     }
     if (doc["user_label"].is<const char*>()) {
       const char* userLabelFromPayload = doc["user_label"];
-      if (user_label) {
-        lv_label_set_text(user_label, userLabelFromPayload);
-      }
+      if (user_label) lv_label_set_text(user_label, userLabelFromPayload);
     }
-    // Extract tool name from payload for display (if available)
     if (doc["tool_name"].is<const char*>()) {
       const char* toolNameFromPayload = doc["tool_name"];
-      // Update display name if different from config
       String newDisplayName = capitalizeToolName(toolNameFromPayload);
       if (newDisplayName != toolDisplayName && title_label) {
         toolDisplayName = newDisplayName;
         lv_label_set_text(title_label, toolDisplayName.c_str());
-        Serial.print("Updated tool display name: ");
-        Serial.println(toolDisplayName);
+        if (non_operational_title)
+          lv_label_set_text(non_operational_title, (toolDisplayName + " is non-operational").c_str());
       }
     }
-    
-    // Extract tool status from event_type and update related labels (only "enabled" and "disabled")
     if (doc["event_type"].is<const char*>()) {
       const char* eventType = doc["event_type"];
-      Serial.print("Tool status: ");
-      Serial.println(eventType);
-      // Only two event types: enabled -> green, disabled -> red
-      bool isToolEnabled = (strcmp(eventType, "enabled") == 0);
-      updateStatusIndicator(isToolEnabled);
-      // When tool is enabled, show "Current User"; when disabled, show "Last User"
+      last_status_enabled = (strcmp(eventType, "enabled") == 0);
+      updateStatusIndicator(last_status_enabled, has_task);
       if (user_label) {
-        if (isToolEnabled) {
-          lv_label_set_text(user_label, "Current User");
-        } else {
-          lv_label_set_text(user_label, "Last User");
-        }
+        lv_label_set_text(user_label, last_status_enabled ? "Current User" : "Last User");
       }
     }
+    return;
   }
   
-  // Handle overall status messages
   if (strcmp(topic, mqtt_topic_overall.c_str()) == 0) {
     Serial.println("Received overall status update");
-    // Could process overall system status here if needed
   }
 }
 
@@ -557,10 +626,33 @@ void updateConnectionStatus() {
   Serial.println(statusText.c_str());
 }
 
-// Update status indicator color based on tool state (thick border, not fill)
-void updateStatusIndicator(bool isEnabled) {
+// Show/hide normal vs non-operational panel; set border color (green/red/yellow)
+void applyMainScreenState() {
+  if (!normal_container || !non_operational_container) return;
+  
+  if (!tool_operational) {
+    lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
+    if (non_operational_title) {
+      String t = toolDisplayName + " is non-operational";
+      lv_label_set_text(non_operational_title, t.c_str());
+    }
+    if (non_operational_task_label)
+      lv_label_set_text(non_operational_task_label, task_summary.c_str());
+  } else {
+    lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
+    updateStatusIndicator(last_status_enabled, has_task);
+  }
+}
+
+// Update status indicator border: green (enabled), red (disabled), yellow (has task)
+void updateStatusIndicator(bool isEnabled, bool hasTask) {
   if (!status_indicator) return;
-  if (isEnabled) {
+  if (hasTask) {
+    lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFFFF00), 0);
+    Serial.println("Status indicator: YELLOW (task)");
+  } else if (isEnabled) {
     lv_obj_set_style_border_color(status_indicator, lv_color_hex(0x00FF00), 0);
     Serial.println("Status indicator: GREEN (enabled)");
   } else {
