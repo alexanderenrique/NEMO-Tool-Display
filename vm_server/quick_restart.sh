@@ -55,13 +55,20 @@ print_warning() {
     echo -e "${YELLOW}⚠ $1${NC}"
 }
 
-# Function to get ports from config.env
+# Function to get ports from config.env (always distinct: ESP32 and NEMO)
 get_esp32_port() {
     echo "${MQTT_PORT_ESP32:-1883}"
 }
 
 get_nemo_port() {
-    echo "$MQTT_PORT"  # NEMO port from config.env
+    local nemo="${MQTT_PORT:-1886}"
+    local esp32="${MQTT_PORT_ESP32:-1883}"
+    # NEMO must not use the same port as ESP32; default 1886 if missing or duplicate
+    if [ -z "$nemo" ] || [ "$nemo" = "$esp32" ]; then
+        echo "1886"
+    else
+        echo "$nemo"
+    fi
 }
 
 # Get all MQTT ports from config (space-separated for loops)
@@ -100,35 +107,50 @@ kill_port() {
         sudo lsof -ti :"$port" | xargs sudo kill -9 2>/dev/null || true
         sleep 1
     fi
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k "${port}/tcp" 2>/dev/null || sudo fuser -k "${port}/tcp" 2>/dev/null || true
+        sleep 1
+    fi
 }
 
 # Phase 1: Close all MQTT ports from config and kill every process using them.
 # Run this first so the broker can bind to localhost later.
 close_mqtt_ports_and_kill_connections() {
-    local ports esp32_port nemo_port
+    local ports esp32_port nemo_port port i
     esp32_port=$(get_esp32_port)
     nemo_port=$(get_nemo_port)
     ports="$esp32_port $nemo_port"
     print_info "Closing MQTT ports from config: $esp32_port, $nemo_port"
-    # Kill processes by port (listeners and connections)
-    for port in $ports; do
-        kill_port "$port"
-    done
-    # Kill broker by name so we don't leave a daemon
-    pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
-    pkill mosquitto 2>/dev/null || true
-    pkill -9 mosquitto 2>/dev/null || true
+
+    # Stop systemd mosquitto so it doesn't hold the port (and doesn't respawn if we kill it)
     if systemctl is-active --quiet mosquitto 2>/dev/null; then
         sudo systemctl stop mosquitto 2>/dev/null || true
     fi
-    # Kill NEMO / Python services that use MQTT
+
+    # Kill processes by port and by name
+    for port in $ports; do
+        kill_port "$port"
+    done
+    pkill -9 -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
+    pkill -9 mosquitto 2>/dev/null || true
     pkill -f "python.*main\.py" 2>/dev/null || true
     pkill -f "python.*manage\.py" 2>/dev/null || true
     pkill -f "python.*nemo" 2>/dev/null || true
     pkill -f "mosquitto_sub" 2>/dev/null || true
-    # Ensure ports are really free (second pass)
     for port in $ports; do
         kill_port "$port"
+    done
+    # Wait until ports are actually free (up to 5s)
+    for i in 1 2 3 4 5; do
+        local busy=0
+        for port in $ports; do
+            if lsof -i :"$port" >/dev/null 2>&1 || (command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":${port} "); then
+                busy=1
+                kill_port "$port"
+            fi
+        done
+        [ "$busy" -eq 0 ] && break
+        sleep 1
     done
     sleep 2
     print_success "MQTT ports closed and connections killed"
@@ -159,6 +181,19 @@ kill_all_processes() {
     close_mqtt_ports_and_kill_connections
 }
 
+# Ensure mosquitto.conf has two distinct listeners (esp32_port and nemo_port).
+# Fixes broken configs where both listeners were the same (e.g. 1883,1883).
+ensure_mosquitto_conf_listeners() {
+    local esp32_port="$1" nemo_port="$2"
+    [ ! -f "$CONFIG_FILE" ] && return 0
+    local first_second
+    first_second=$(awk -v e="$esp32_port" -v n="$nemo_port" '
+        /^listener [0-9]+ / { if (++c==1) { sub(/listener [0-9]+/, "listener " e); print; next } else if (c==2) { sub(/listener [0-9]+/, "listener " n); print; next } }
+        { print }
+    ' "$CONFIG_FILE")
+    echo "$first_second" > "$CONFIG_FILE"
+}
+
 # Function to start services
 start_services() {
     local esp32_port nemo_port
@@ -174,6 +209,9 @@ start_services() {
 
     # Ensure MQTT dirs and files have correct permissions so Mosquitto can read passwd and write log
     ensure_mqtt_permissions
+
+    # Ensure broker config has two distinct ports (fixes 1883+1883 from bad config)
+    ensure_mosquitto_conf_listeners "$esp32_port" "$nemo_port"
 
     # Start MQTT broker (passive: binds to localhost on config ports)
     print_info "Starting MQTT broker on localhost:$esp32_port, localhost:$nemo_port..."
