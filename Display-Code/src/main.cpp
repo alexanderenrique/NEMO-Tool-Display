@@ -121,6 +121,7 @@ void setup() {
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = touch_read;
   lv_indev_drv_register(&indev_drv);
+  Serial.println("Touch input enabled (pointer)");
   
   // Create simple UI
   create_simple_ui();
@@ -247,16 +248,31 @@ void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data) {
 #ifdef TOUCH_CS
   touched = tft.getTouch(&x, &y);
 #endif
+  static bool was_pressed = false;
   if (touched) {
     if (x >= DISPLAY_WIDTH) x = DISPLAY_WIDTH - 1;
     if (y >= DISPLAY_HEIGHT) y = DISPLAY_HEIGHT - 1;
+    // Touch controller Y is inverted vs LVGL display: physical top reports low Y.
+    // Invert Y so touching the visual button position matches LVGL's bottom-right.
     data->point.x = x;
-    data->point.y = y;
+    data->point.y = (DISPLAY_HEIGHT - 1) - y;
     data->state = LV_INDEV_STATE_PRESSED;
+    if (!was_pressed) {
+      Serial.print("Touch: pressed at (");
+      Serial.print(x);
+      Serial.print(", ");
+      Serial.print(y);
+      Serial.println(")");
+      was_pressed = true;
+    }
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
     data->point.x = 0;
     data->point.y = 0;
+    if (was_pressed) {
+      Serial.println("Touch: released");
+      was_pressed = false;
+    }
   }
 }
 
@@ -370,6 +386,7 @@ void create_simple_ui() {
   lv_label_set_text(lbl_fwd, LV_SYMBOL_RIGHT);
   lv_obj_center(lbl_fwd);
   lv_obj_add_event_cb(btn_forward, [](lv_event_t *e) { show_details_screen(); }, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);  // Shown only when has_task
 
   // Details screen (problem description + back arrow) – hidden by default
   details_container = lv_obj_create(screen);
@@ -381,9 +398,15 @@ void create_simple_ui() {
   lv_obj_set_scrollbar_mode(details_container, LV_SCROLLBAR_MODE_OFF);
   lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
 
+  lv_obj_t *details_title = lv_label_create(details_container);
+  lv_label_set_text(details_title, "Problem description");
+  lv_obj_set_style_text_font(details_title, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(details_title, lv_color_hex(textColor), 0);
+  lv_obj_set_pos(details_title, 12, 8);
+
   lv_obj_t *problem_scroll = lv_obj_create(details_container);
-  lv_obj_set_size(problem_scroll, DISPLAY_WIDTH - 24, DISPLAY_HEIGHT - arrowSize - arrowMargin - 16);
-  lv_obj_set_pos(problem_scroll, 12, 12);
+  lv_obj_set_size(problem_scroll, DISPLAY_WIDTH - 24, DISPLAY_HEIGHT - arrowSize - arrowMargin - 40);
+  lv_obj_set_pos(problem_scroll, 12, 36);
   lv_obj_set_style_border_width(problem_scroll, 0, 0);
   lv_obj_set_scrollbar_mode(problem_scroll, LV_SCROLLBAR_MODE_AUTO);
   problem_description_label = lv_label_create(problem_scroll);
@@ -408,7 +431,12 @@ void create_simple_ui() {
 
 void show_status_screen() {
   if (details_container) lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
-  if (btn_forward) lv_obj_clear_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
+  if (btn_forward) {
+    if (has_task)
+      lv_obj_clear_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
+    else
+      lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
+  }
   if (normal_container) lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
   applyMainScreenState();  // Style normal screen (red+white when non-operational, else white+black)
 }
@@ -556,6 +584,13 @@ void processMQTTMessage(const char* topic, const char* payload) {
         lv_label_set_text(problem_description_label, problem_description.c_str());
       else
         lv_label_set_text(problem_description_label, "No problem description.");
+    }
+
+    if (btn_forward) {
+      if (has_task)
+        lv_obj_clear_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
+      else
+        lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
     }
 
     applyMainScreenState();
