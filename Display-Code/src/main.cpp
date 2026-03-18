@@ -284,7 +284,7 @@ void create_simple_ui() {
   lv_obj_set_style_pad_all(normal_container, 0, 0);
   lv_obj_set_scrollbar_mode(normal_container, LV_SCROLLBAR_MODE_OFF);
 
-  // Outer ring: yellow when task, no border when no task (only when operational). Single visible ring.
+  // Outer ring: always same size so inner content never shifts. Yellow when task, background color when no task.
   const int outerRingWidth = 14;
   const int innerRingWidth = 20;
   int outerW = DISPLAY_WIDTH - 2 * screenMargin;
@@ -292,9 +292,9 @@ void create_simple_ui() {
   outer_ring = lv_obj_create(normal_container);
   lv_obj_set_size(outer_ring, outerW, outerH);
   lv_obj_set_pos(outer_ring, screenMargin, screenMargin);
-  lv_obj_set_style_bg_opa(outer_ring, LV_OPA_TRANSP, 0);  // No fill – only border (yellow) is visible
-  lv_obj_set_style_border_width(outer_ring, 0, 0);  // Updated by updateOuterRing(): 0 = no task, outerRingWidth = task
-  lv_obj_set_style_border_color(outer_ring, lv_color_hex(0xFFFF00), 0);
+  lv_obj_set_style_bg_opa(outer_ring, LV_OPA_TRANSP, 0);  // No fill – only border is visible
+  lv_obj_set_style_border_width(outer_ring, outerRingWidth, 0);  // Always same width – updateOuterRing() only changes color
+  lv_obj_set_style_border_color(outer_ring, lv_color_hex(backgroundColor), 0);  // Invisible until task (yellow)
   lv_obj_set_style_radius(outer_ring, 0, 0);
   lv_obj_set_style_pad_all(outer_ring, 0, 0);
   lv_obj_set_style_outline_width(outer_ring, 0, 0);
@@ -717,16 +717,14 @@ void applyMainScreenState() {
   }
 }
 
-// Outer ring: yellow when there is a task, no border (default) when no task
+// Outer ring: yellow when task, background color when no task (border width always same so layout never shifts)
 void updateOuterRing(bool hasTask) {
   if (!outer_ring) return;
-  const int outerRingWidth = 14;
   if (hasTask) {
-    lv_obj_set_style_border_width(outer_ring, outerRingWidth, 0);
     lv_obj_set_style_border_color(outer_ring, lv_color_hex(0xFFFF00), 0);
     Serial.println("Outer ring: YELLOW (task)");
   } else {
-    lv_obj_set_style_border_width(outer_ring, 0, 0);
+    lv_obj_set_style_border_color(outer_ring, lv_color_hex(0xFFFFFF), 0);  // Match normal_container background
     Serial.println("Outer ring: none (no task)");
   }
 }
