@@ -22,9 +22,29 @@ String mqtt_topic_overall = String(MQTT_TOPIC_PREFIX) + "/overall";
 // State from separate MQTT messages (operational and task)
 bool tool_operational = true;
 bool has_task = false;
-String task_summary = "";
-String problem_description = "";
+String task_summary = "";       // Derived from task store (aggregated)
+String problem_description = ""; // Derived from task store (aggregated)
 bool last_status_enabled = false;  // From last status message; used for border when operational
+
+// Multiple-task store (ESP32 tracks per task_id; VM sends one event per message)
+#define MAX_TASKS 6
+#define MAX_SUMMARY_LEN 200
+#define MAX_DESCRIPTION_LEN 600
+struct TaskEntry {
+  int64_t id;
+  bool used;
+  String summary;
+  String description;
+};
+static TaskEntry s_tasks[MAX_TASKS];
+
+static void taskStoreAddOrUpdate(int64_t taskId, const String& summary, const String& description);
+static void taskStoreRemove(int64_t taskId);
+static void taskStoreClearAll();
+static bool taskStoreHasAny();
+static int taskStoreCount();
+static String taskStoreGetAggregatedSummary();
+static String taskStoreGetAggregatedDescription();
 
 // Display configuration (TFT 480x320)
 TFT_eSPI tft = TFT_eSPI();
@@ -55,6 +75,11 @@ lv_obj_t *problem_description_label = nullptr;
 lv_obj_t *details_container = nullptr;   // Details screen (problem description)
 lv_obj_t *btn_forward = nullptr;         // Arrow lower-right: go to Details
 lv_obj_t *btn_back = nullptr;           // Arrow on Details: back to Status
+
+// Screen state / auto-timeout
+static bool details_screen_visible = false;
+static unsigned long details_screen_shown_at = 0;
+static const unsigned long DETAILS_SCREEN_TIMEOUT_MS = 30000UL;  // 30 seconds on problem description
 
 // Tool name from config
 String toolDisplayName = "";
@@ -176,6 +201,12 @@ void loop() {
     if (now - lastStatusUpdate >= DISPLAY_UPDATE_INTERVAL) {
       lastStatusUpdate = now;
       updateConnectionStatus();
+    }
+
+    // Auto-return from details (problem description) screen after timeout
+    if (details_screen_visible && (now - details_screen_shown_at >= DETAILS_SCREEN_TIMEOUT_MS)) {
+      Serial.println("Details screen timeout reached, returning to status screen");
+      show_status_screen();
     }
   }
 
@@ -439,12 +470,15 @@ void show_status_screen() {
   }
   if (normal_container) lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
   applyMainScreenState();  // Style normal screen (red+white when non-operational, else white+black)
+  details_screen_visible = false;
 }
 
 void show_details_screen() {
   if (normal_container) lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
   if (btn_forward) lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
   if (details_container) lv_obj_clear_flag(details_container, LV_OBJ_FLAG_HIDDEN);
+  details_screen_visible = true;
+  details_screen_shown_at = millis();
 }
 
 // MQTT Setup
@@ -514,6 +548,107 @@ void connectMQTT() {
 // MQTT buffer: task payload can include long problem_description
 #define MQTT_MESSAGE_BUFFER_SIZE 2048
 
+// ---- Task store helpers ----
+static void taskStoreAddOrUpdate(int64_t taskId, const String& summary, const String& description) {
+  // Cap lengths to avoid unbounded heap use
+  String s = summary.length() > (unsigned)MAX_SUMMARY_LEN ? summary.substring(0, MAX_SUMMARY_LEN) : summary;
+  String d = description.length() > (unsigned)MAX_DESCRIPTION_LEN ? description.substring(0, MAX_DESCRIPTION_LEN) : description;
+
+  for (int i = 0; i < MAX_TASKS; i++) {
+    if (s_tasks[i].used && s_tasks[i].id == taskId) {
+      s_tasks[i].summary = s;
+      s_tasks[i].description = d;
+      return;
+    }
+  }
+  // New task: find free slot
+  for (int i = 0; i < MAX_TASKS; i++) {
+    if (!s_tasks[i].used) {
+      s_tasks[i].id = taskId;
+      s_tasks[i].used = true;
+      s_tasks[i].summary = s;
+      s_tasks[i].description = d;
+      return;
+    }
+  }
+  // Full: drop oldest (index 0), shift left, add at end
+  for (int i = 0; i < MAX_TASKS - 1; i++) {
+    s_tasks[i] = s_tasks[i + 1];
+  }
+  s_tasks[MAX_TASKS - 1].id = taskId;
+  s_tasks[MAX_TASKS - 1].used = true;
+  s_tasks[MAX_TASKS - 1].summary = s;
+  s_tasks[MAX_TASKS - 1].description = d;
+}
+
+static void taskStoreRemove(int64_t taskId) {
+  for (int i = 0; i < MAX_TASKS; i++) {
+    if (s_tasks[i].used && s_tasks[i].id == taskId) {
+      s_tasks[i].used = false;
+      s_tasks[i].summary = "";
+      s_tasks[i].description = "";
+      // Compact: shift later entries down
+      for (int j = i; j < MAX_TASKS - 1; j++) {
+        s_tasks[j] = s_tasks[j + 1];
+      }
+      s_tasks[MAX_TASKS - 1].used = false;
+      s_tasks[MAX_TASKS - 1].id = 0;
+      s_tasks[MAX_TASKS - 1].summary = "";
+      s_tasks[MAX_TASKS - 1].description = "";
+      return;
+    }
+  }
+}
+
+static void taskStoreClearAll() {
+  for (int i = 0; i < MAX_TASKS; i++) {
+    s_tasks[i].used = false;
+    s_tasks[i].summary = "";
+    s_tasks[i].description = "";
+  }
+}
+
+static bool taskStoreHasAny() {
+  for (int i = 0; i < MAX_TASKS; i++) {
+    if (s_tasks[i].used) return true;
+  }
+  return false;
+}
+
+static int taskStoreCount() {
+  int n = 0;
+  for (int i = 0; i < MAX_TASKS; i++) {
+    if (s_tasks[i].used) n++;
+  }
+  return n;
+}
+
+// Summary for status/red screen only: use summary field only (no description fallback),
+// so the shut-down screen stays brief and full problem description stays on Details tab.
+static String taskStoreGetAggregatedSummary() {
+  String out;
+  for (int i = 0; i < MAX_TASKS; i++) {
+    if (!s_tasks[i].used) continue;
+    if (s_tasks[i].summary.length() == 0) continue;
+    if (out.length() > 0) out += " | ";
+    out += s_tasks[i].summary;
+  }
+  return out;
+}
+
+static String taskStoreGetAggregatedDescription() {
+  String out;
+  for (int i = 0; i < MAX_TASKS; i++) {
+    if (!s_tasks[i].used) continue;
+    if (out.length() > 0) out += "\n\n---\n\n";
+    if (s_tasks[i].description.length() > 0)
+      out += s_tasks[i].description;
+    else if (s_tasks[i].summary.length() > 0)
+      out += s_tasks[i].summary;
+  }
+  return out;
+}
+
 // MQTT Callback
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   static char message[MQTT_MESSAGE_BUFFER_SIZE];
@@ -564,20 +699,47 @@ void processMQTTMessage(const char* topic, const char* payload) {
   
   // ---- Task: independent message (can be large - problem_description) ----
   if (strcmp(topic, mqtt_topic_task.c_str()) == 0) {
+    String msg_summary = "";
+    String msg_description = "";
     if (doc["task_summary"].is<const char*>())
-      task_summary = doc["task_summary"].as<const char*>();
-    else
-      task_summary = "";
-    // Never show internal event names (e.g. task_shutdown) on the shutdown screen
-    if (task_summary.equalsIgnoreCase("task_shutdown") || task_summary.equalsIgnoreCase("task_updated") ||
-        task_summary.equalsIgnoreCase("task") || task_summary.equalsIgnoreCase("task_created"))
-      task_summary = "";
+      msg_summary = doc["task_summary"].as<const char*>();
     if (doc["problem_description"].is<const char*>())
-      problem_description = doc["problem_description"].as<const char*>();
-    else
-      problem_description = "";
-    has_task = (task_summary.length() > 0 || problem_description.length() > 0);
-    // When task is cleared (empty summary + description), applyMainScreenState() removes the outer ring.
+      msg_description = doc["problem_description"].as<const char*>();
+
+    // Parse task_id (integer or string from JSON)
+    bool has_task_id = doc.containsKey("task_id") && !doc["task_id"].isNull();
+    int64_t task_id_val = 0;
+    if (has_task_id) {
+      if (doc["task_id"].is<int>() || doc["task_id"].is<long>() || doc["task_id"].is<long long>())
+        task_id_val = doc["task_id"].as<int64_t>();
+      else if (doc["task_id"].is<const char*>())
+        task_id_val = (int64_t)atoll(doc["task_id"].as<const char*>());
+    }
+
+    const bool both_empty = (msg_summary.length() == 0 && msg_description.length() == 0);
+
+    if (both_empty && has_task_id && (doc["task_id"].is<int>() || doc["task_id"].is<long>() || doc["task_id"].is<long long>() || doc["task_id"].is<const char*>())) {
+      // Clear-one: remove this task_id from the store
+      taskStoreRemove(task_id_val);
+      Serial.print("Task remove id=");
+      Serial.println((long)task_id_val);
+    } else if (both_empty && !has_task_id) {
+      // Clear-all (backward compat): empty payload without task_id
+      taskStoreClearAll();
+      Serial.println("Tasks clear");
+    } else {
+      // Add or update: sanitize internal event names, then add/update
+      if (msg_summary.equalsIgnoreCase("task_shutdown") || msg_summary.equalsIgnoreCase("task_updated") ||
+          msg_summary.equalsIgnoreCase("task") || msg_summary.equalsIgnoreCase("task_created"))
+        msg_summary = "";
+      taskStoreAddOrUpdate(task_id_val, msg_summary, msg_description);
+      Serial.print("Task add/update id=");
+      Serial.println((long)task_id_val);
+    }
+
+    has_task = taskStoreHasAny();
+    task_summary = taskStoreGetAggregatedSummary();
+    problem_description = taskStoreGetAggregatedDescription();
 
     if (problem_description_label) {
       if (problem_description.length() > 0)
@@ -596,7 +758,8 @@ void processMQTTMessage(const char* topic, const char* payload) {
     applyMainScreenState();
     Serial.print("Task: has_task=");
     Serial.print(has_task ? "1" : "0");
-    Serial.println(" (summary + problem_description)");
+    Serial.print(" tasks count=");
+    Serial.println(taskStoreCount());
     return;
   }
   

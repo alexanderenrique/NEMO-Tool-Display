@@ -10,7 +10,8 @@ This document describes the **operational** and **tasks** logic: what the VM ser
   - NEMO publishes to `nemo/tools/{tool_id}/{event_type}`. The server subscribes, then forwards to ESP32 on `nemo/esp32/{tool_id}/...` (status, operational, task).
 - **ESP32 (C++):** `Display-Code/src/main.cpp`  
   - Subscribes to `nemo/esp32/{tool_id}/status`, `.../operational`, `.../task`, and `.../overall`.  
-  - Holds independent state: `tool_operational`, `has_task`, `task_summary`, `problem_description`, plus status (enabled/disabled, user, time).
+  - Holds independent state: `tool_operational`, `has_task`, `task_summary`, `problem_description`, plus status (enabled/disabled, user, time).  
+  - Maintains a **per-task store** (multiple tasks keyed by `task_id`); `has_task` and the displayed summary/description are derived from that store.
 
 ---
 
@@ -74,15 +75,16 @@ Published with **QoS 1**, **retain = true**, so reconnecting ESP32s get the last
 ```
 
 **Special case – clear task:**  
-If NEMO sends a **task** event with `event == "task_shutdown"` and `cancelled == true`, or with `resolved == true` (e.g. `task_updated`), the server **clears** the task on the display:
+If NEMO sends a **task** event with `event == "task_shutdown"` and `cancelled == true`, or with `resolved == true` (e.g. `task_updated`), the server sends a **clear** payload:
 
 - `task_summary` and `problem_description` are sent as **empty strings**.
-- ESP32 will set `has_task = false` and clear task text.
+- `task_id` is still included when present from NEMO (so the ESP32 can clear only that task when multiple exist).
 
 Otherwise:
 
 - `task_summary` = `tool_data["task_summary"]` or `tool_data["description"]` or `event_name`.
 - `problem_description` = `tool_data["problem_description"]` (or empty).
+- `task_id` is forwarded so the ESP32 can add or update that task in its store.
 
 Published with **QoS 1**, **retain = true**.
 
@@ -99,15 +101,31 @@ Published with **QoS 1**, **retain = true**.
 
 ## 4. What the ESP32 display shows
 
-### 4.1 State variables (from MQTT)
+### 4.1 Multi-task store and message interpretation
+
+The ESP32 keeps a **task store** (bounded list of tasks keyed by `task_id`). Each incoming **task** message is interpreted as:
+
+- **Clear-one:** Payload has **empty** `task_summary` and `problem_description` and a **present** `task_id` (integer or string) → remove that `task_id` from the store. Other tasks are unchanged. If no tasks remain, `has_task` becomes false and task text is cleared from the problem description page.
+- **Clear-all:** Payload has empty summary and description and **no** `task_id` (or null) → clear the entire store. Backward compatible with legacy “clear” messages that omit `task_id`.
+- **Add/update:** Otherwise → add a new task or update the existing one for that `task_id`. Internal event names (e.g. `task_shutdown`, `task_updated`) are not shown as summary/description.
+
+After each update, the ESP32 derives:
+
+- **has_task** = true iff the store has at least one task.
+- **task_summary** = aggregated string for display (summaries joined with a delimiter, e.g. `" | "`).
+- **problem_description** = aggregated string for the Details tab (descriptions joined with `"\n\n---\n\n"`).
+
+**Reconnect behavior:** The task topic is retained, so a reconnecting ESP32 receives only the **last** published message. That message represents a single event (one add/update or one clear). The full set of tasks is **not** restored on reconnect; the display will show at most one task (if the last message was an add/update) or none (if the last message was a clear). Full multi-task state is only built up as messages are received after connect.
+
+### 4.2 State variables (from MQTT)
 
 - **tool_operational** (from `.../operational`): `true` = normal screen, `false` = red “non-operational” screen.
-- **has_task** (from `.../task`): `true` if `task_summary` or `problem_description` is non-empty.
-- **task_summary**, **problem_description**: Task text; summary on Status tab (and on red screen), full description on Details tab.
+- **has_task** (derived from task store): `true` iff at least one task is in the store.
+- **task_summary**, **problem_description** (derived from task store): Aggregated task text; summary on Status tab (and on red screen), full description on Details tab.
 - **last_status_enabled** (from `.../status`): Used only when **tool_operational** is true, to set border green (enabled) or red (disabled).
 - **toolDisplayName**: From operational or status payloads; used in title and “{Tool} is non-operational”.
 
-### 4.2 Main screen logic (`applyMainScreenState()`)
+### 4.3 Main screen logic (`applyMainScreenState()`)
 
 - **If `!tool_operational`:**
   - Hide **normal** container (white status view).
@@ -160,14 +178,15 @@ So:
 
 ### 5.3 Tool is in shutdown, then task is cancelled (task_shutdown cancelled)
 
-1. Tool is non-operational and had a task (red screen with task text).
-2. NEMO sends `nemo/tools/{id}/tasks` with `event == "task_shutdown"` and `cancelled == true`.
-3. VM server sends **task** with **empty** `task_summary` and `problem_description` to clear the task.
+1. Tool is non-operational and had one or more tasks (red screen with task text).
+2. NEMO sends `nemo/tools/{id}/tasks` with `event == "task_shutdown"` and `cancelled == true` (and typically `task_id` for the cancelled task).
+3. VM server sends **task** with **empty** `task_summary` and `problem_description` and the same `task_id` (when NEMO provided it).
 
 **ESP32:**  
-- Sets `task_summary = ""`, `problem_description = ""`, `has_task = false`.  
+- **Clear-one** (if `task_id` present): Removes that task from the store. If other tasks remain, `has_task` stays true and the problem description page shows only the remaining task(s). If that was the last task, `has_task = false` and task text is cleared.  
+- **Clear-all** (if `task_id` missing/null): Clears the entire store; `has_task = false`.  
 - `tool_operational` unchanged (still false).  
-- **Display:** Red “non-operational” screen with **no** task text below the title. Details tab shows “No problem description.”
+- **Display:** Red “non-operational” screen; task summary and Details tab reflect remaining tasks or “No problem description.” when none remain.
 
 ---
 
@@ -202,9 +221,9 @@ So:
 | Tool goes non-operational (shutdown) | `.../operational` with `operational: false` | Red screen “{Tool} is non-operational” + current task summary (or empty). |
 | Tool goes back operational | `.../operational` with `operational: true` | Normal screen; border yellow if task, else green/red from status. |
 | New/updated task | `.../task` with summary + problem_description | Task text updated; if operational, border turns yellow; if non-operational, red screen shows new summary. |
-| Task cancelled (task_shutdown, cancelled=true) | `.../task` with empty summary + problem_description | `has_task = false`; task text cleared; red screen (if non-operational) shows only title. |
+| Task cancelled (task_shutdown, cancelled=true) | `.../task` with empty summary + problem_description (+ `task_id` for clear-one) | If `task_id` present: that task removed from store; `has_task` true iff other tasks remain; problem description shows remaining tasks. If no `task_id`: clear-all; `has_task = false`. |
 | Task then shutdown | Only `.../operational` false | Red screen with existing task text. |
 | Shutdown then task | Only `.../task` | Red screen with new task text. |
 | Shutdown then task cancelled | Only `.../task` (empty) | Red screen, no task text. |
 
-All operational and task messages are published with **retain = true**, so a reconnecting ESP32 receives the latest operational and task state and shows the correct screen and border color immediately.
+All operational and task messages are published with **retain = true**. A reconnecting ESP32 receives the latest operational message and the **last** task message only; multi-task state is not restored on reconnect (see §4.1).
