@@ -8,7 +8,7 @@
 
 #define LV_USE_LOG 1
 #if LV_USE_LOG
-    #define LV_LOG_LEVEL LV_LOG_LEVEL_INFO
+    #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
     #define LV_LOG_PRINTF 1
 #endif
 
@@ -54,7 +54,7 @@
 
 /* Widget usage - Only include widgets actually used */
 #define LV_USE_BAR 0      // Progress bar - not used
-#define LV_USE_BTN 0      // Button - not used
+#define LV_USE_BTN 1      // Button - used for Details/Back arrows
 #define LV_USE_LABEL 1    // All text labels - USED
 #define LV_USE_ARC 0      // Arc - not used
 #define LV_USE_BTNMATRIX 1 // Button matrix - used by tabview for tab bar

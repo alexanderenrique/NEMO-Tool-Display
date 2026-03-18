@@ -41,19 +41,22 @@ static lv_color_t buf[480 * 10]; // 10 lines buffer
 static lv_disp_drv_t disp_drv;
 
 // LVGL UI elements
-lv_obj_t *tabview = nullptr;
 lv_obj_t *title_label = nullptr;
 lv_obj_t *status_label = nullptr;
 lv_obj_t *user_label = nullptr;
 lv_obj_t *user_value = nullptr;
 lv_obj_t *time_label = nullptr;
 lv_obj_t *time_value = nullptr;
-lv_obj_t *status_indicator = nullptr;
+lv_obj_t *outer_ring = nullptr;             // Outer ring: yellow = task, none/white = no task
+lv_obj_t *status_indicator = nullptr;       // Inner ring: green = enabled, red = disabled
 lv_obj_t *normal_container = nullptr;       // Shown when tool is operational
 lv_obj_t *non_operational_container = nullptr;  // Full red screen when non-operational
 lv_obj_t *non_operational_title = nullptr;
 lv_obj_t *non_operational_task_label = nullptr;
-lv_obj_t *problem_description_label = nullptr;  // Tab 2 - full problem_description
+lv_obj_t *problem_description_label = nullptr;
+lv_obj_t *details_container = nullptr;   // Details screen (problem description)
+lv_obj_t *btn_forward = nullptr;         // Arrow lower-right: go to Details
+lv_obj_t *btn_back = nullptr;           // Arrow on Details: back to Status
 
 // Tool name from config
 String toolDisplayName = "";
@@ -69,8 +72,11 @@ void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data);
 void create_simple_ui();
 String capitalizeToolName(const char* toolName);
 void updateConnectionStatus();
-void updateStatusIndicator(bool isEnabled, bool hasTask = false);
-void applyMainScreenState();  // Show/hide normal vs non-operational, set border color
+void updateStatusIndicator(bool isEnabled);  // Inner ring: enabled (green) / disabled (red)
+void updateOuterRing(bool hasTask);          // Outer ring: yellow if task, else none
+void applyMainScreenState();  // Show/hide normal vs non-operational, set both rings
+void show_status_screen();   // Show status view, hide details
+void show_details_screen();  // Show details view, hide status
 
 void setup() {
   Serial.begin(9600);
@@ -256,7 +262,7 @@ void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data) {
   }
 }
 
-// Create LVGL UI with tabview: tab 0 = Status (normal or non-operational), tab 1 = Problem description
+// Create LVGL UI: status view only (no tabs)
 void create_simple_ui() {
   const uint32_t backgroundColor = 0xFFFFFF;
   const uint32_t textColor = 0x000000;
@@ -266,29 +272,47 @@ void create_simple_ui() {
   const lv_font_t* valueFont = &lv_font_montserrat_32;
   const int screenMargin = 8;
 
-  // Tabview: two tabs, small tab bar (swipe between tabs)
-  tabview = lv_tabview_create(lv_scr_act(), LV_DIR_TOP, 28);
-  lv_obj_t *tab_status = lv_tabview_add_tab(tabview, "Status");
-  lv_obj_t *tab_problem = lv_tabview_add_tab(tabview, "Details");
+  lv_obj_t *screen = lv_scr_act();
 
   // ---- Tab 0: Status ----
-  // Normal container (white interior, colored border, user/time labels)
-  normal_container = lv_obj_create(tab_status);
-  lv_obj_set_size(normal_container, DISPLAY_WIDTH, DISPLAY_HEIGHT - 28);
+  // Normal container (white interior, two rings, user/time labels)
+  normal_container = lv_obj_create(screen);
+  lv_obj_set_size(normal_container, DISPLAY_WIDTH, DISPLAY_HEIGHT);
   lv_obj_set_pos(normal_container, 0, 0);
   lv_obj_set_style_bg_color(normal_container, lv_color_hex(backgroundColor), 0);
   lv_obj_set_style_border_width(normal_container, 0, 0);
   lv_obj_set_style_pad_all(normal_container, 0, 0);
   lv_obj_set_scrollbar_mode(normal_container, LV_SCROLLBAR_MODE_OFF);
 
-  status_indicator = lv_obj_create(normal_container);
-  lv_obj_set_size(status_indicator, DISPLAY_WIDTH - 2 * screenMargin, (DISPLAY_HEIGHT - 28) - 2 * screenMargin);
-  lv_obj_set_pos(status_indicator, screenMargin, screenMargin);
+  // Outer ring: yellow when task, no border when no task (only when operational). Single visible ring.
+  const int outerRingWidth = 14;
+  const int innerRingWidth = 20;
+  int outerW = DISPLAY_WIDTH - 2 * screenMargin;
+  int outerH = DISPLAY_HEIGHT - 2 * screenMargin;
+  outer_ring = lv_obj_create(normal_container);
+  lv_obj_set_size(outer_ring, outerW, outerH);
+  lv_obj_set_pos(outer_ring, screenMargin, screenMargin);
+  lv_obj_set_style_bg_opa(outer_ring, LV_OPA_TRANSP, 0);  // No fill – only border (yellow) is visible
+  lv_obj_set_style_border_width(outer_ring, 0, 0);  // Updated by updateOuterRing(): 0 = no task, outerRingWidth = task
+  lv_obj_set_style_border_color(outer_ring, lv_color_hex(0xFFFF00), 0);
+  lv_obj_set_style_radius(outer_ring, 0, 0);
+  lv_obj_set_style_pad_all(outer_ring, 0, 0);
+  lv_obj_set_style_outline_width(outer_ring, 0, 0);
+  lv_obj_set_scrollbar_mode(outer_ring, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(outer_ring, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Inner ring: green = enabled, red = disabled. Flush with outer ring so only two rings show.
+  int innerW = outerW - 2 * outerRingWidth;
+  int innerH = outerH - 2 * outerRingWidth;
+  status_indicator = lv_obj_create(outer_ring);
+  lv_obj_set_size(status_indicator, innerW, innerH);
+  lv_obj_set_pos(status_indicator, 0, 0);  // Flush to outer ring content area – no gap
   lv_obj_set_style_bg_color(status_indicator, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_set_style_border_width(status_indicator, 20, 0);
-  lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFF0000), 0);
+  lv_obj_set_style_border_width(status_indicator, innerRingWidth, 0);
+  lv_obj_set_style_border_color(status_indicator, lv_color_hex(0x00FF00), 0);
   lv_obj_set_style_radius(status_indicator, 0, 0);
   lv_obj_set_style_pad_all(status_indicator, 8, 0);
+  lv_obj_set_style_outline_width(status_indicator, 0, 0);
   lv_obj_set_scrollbar_mode(status_indicator, LV_SCROLLBAR_MODE_OFF);
   lv_obj_clear_flag(status_indicator, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -328,9 +352,9 @@ void create_simple_ui() {
   lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
   lv_obj_align(status_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
-  // Non-operational overlay (full red screen, white text) - same tab, shown when !tool_operational
-  non_operational_container = lv_obj_create(tab_status);
-  lv_obj_set_size(non_operational_container, DISPLAY_WIDTH, DISPLAY_HEIGHT - 28);
+  // Non-operational overlay (full red screen, white text), shown when !tool_operational
+  non_operational_container = lv_obj_create(screen);
+  lv_obj_set_size(non_operational_container, DISPLAY_WIDTH, DISPLAY_HEIGHT);
   lv_obj_set_pos(non_operational_container, 0, 0);
   lv_obj_set_style_bg_color(non_operational_container, lv_color_hex(0xFF0000), 0);
   lv_obj_set_style_border_width(non_operational_container, 0, 0);
@@ -353,9 +377,30 @@ void create_simple_ui() {
   lv_obj_align(non_operational_task_label, LV_ALIGN_TOP_LEFT, 0, 70);
   lv_label_set_long_mode(non_operational_task_label, LV_LABEL_LONG_WRAP);
 
-  // ---- Tab 1: Problem description (full text, scrollable) ----
-  lv_obj_t *problem_scroll = lv_obj_create(tab_problem);
-  lv_obj_set_size(problem_scroll, DISPLAY_WIDTH - 24, DISPLAY_HEIGHT - 28 - 24);
+  // Forward arrow (lower right): go to Details screen
+  const int arrowSize = 48;
+  const int arrowMargin = 12;
+  btn_forward = lv_btn_create(screen);
+  lv_obj_set_size(btn_forward, arrowSize, arrowSize);
+  lv_obj_align(btn_forward, LV_ALIGN_BOTTOM_RIGHT, -arrowMargin, -arrowMargin);
+  lv_obj_set_style_radius(btn_forward, arrowSize / 2, 0);
+  lv_obj_t *lbl_fwd = lv_label_create(btn_forward);
+  lv_label_set_text(lbl_fwd, LV_SYMBOL_RIGHT);
+  lv_obj_center(lbl_fwd);
+  lv_obj_add_event_cb(btn_forward, [](lv_event_t *e) { show_details_screen(); }, LV_EVENT_CLICKED, NULL);
+
+  // Details screen (problem description + back arrow) – hidden by default
+  details_container = lv_obj_create(screen);
+  lv_obj_set_size(details_container, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+  lv_obj_set_pos(details_container, 0, 0);
+  lv_obj_set_style_bg_color(details_container, lv_color_hex(backgroundColor), 0);
+  lv_obj_set_style_border_width(details_container, 0, 0);
+  lv_obj_set_style_pad_all(details_container, 0, 0);
+  lv_obj_set_scrollbar_mode(details_container, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_t *problem_scroll = lv_obj_create(details_container);
+  lv_obj_set_size(problem_scroll, DISPLAY_WIDTH - 24, DISPLAY_HEIGHT - arrowSize - arrowMargin - 16);
   lv_obj_set_pos(problem_scroll, 12, 12);
   lv_obj_set_style_border_width(problem_scroll, 0, 0);
   lv_obj_set_scrollbar_mode(problem_scroll, LV_SCROLLBAR_MODE_AUTO);
@@ -366,8 +411,32 @@ void create_simple_ui() {
   lv_obj_set_style_text_color(problem_description_label, lv_color_hex(textColor), 0);
   lv_label_set_long_mode(problem_description_label, LV_LABEL_LONG_WRAP);
 
+  btn_back = lv_btn_create(details_container);
+  lv_obj_set_size(btn_back, arrowSize, arrowSize);
+  lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, arrowMargin, -arrowMargin);
+  lv_obj_set_style_radius(btn_back, arrowSize / 2, 0);
+  lv_obj_t *lbl_back = lv_label_create(btn_back);
+  lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
+  lv_obj_center(lbl_back);
+  lv_obj_add_event_cb(btn_back, [](lv_event_t *e) { show_status_screen(); }, LV_EVENT_CLICKED, NULL);
+
   applyMainScreenState();
-  Serial.println("LVGL UI created (tabview: Status + Details)");
+  Serial.println("LVGL UI created (status + details with arrows)");
+}
+
+void show_status_screen() {
+  if (details_container) lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
+  if (btn_forward) lv_obj_clear_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
+  if (normal_container) lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
+  if (non_operational_container) lv_obj_clear_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
+  applyMainScreenState();  // Restore which of normal/non_operational is visible
+}
+
+void show_details_screen() {
+  if (normal_container) lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
+  if (non_operational_container) lv_obj_add_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
+  if (btn_forward) lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
+  if (details_container) lv_obj_clear_flag(details_container, LV_OBJ_FLAG_HIDDEN);
 }
 
 // MQTT Setup
@@ -498,7 +567,8 @@ void processMQTTMessage(const char* topic, const char* payload) {
     else
       problem_description = "";
     has_task = (task_summary.length() > 0 || problem_description.length() > 0);
-    
+    // When task is cleared (empty summary + description), applyMainScreenState() removes the outer ring.
+
     if (problem_description_label) {
       if (problem_description.length() > 0)
         lv_label_set_text(problem_description_label, problem_description.c_str());
@@ -552,7 +622,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
     if (doc["event_type"].is<const char*>()) {
       const char* eventType = doc["event_type"];
       last_status_enabled = (strcmp(eventType, "enabled") == 0);
-      updateStatusIndicator(last_status_enabled, has_task);
+      updateStatusIndicator(last_status_enabled);
       if (user_label) {
         lv_label_set_text(user_label, last_status_enabled ? "Current User" : "Last User");
       }
@@ -642,21 +712,33 @@ void applyMainScreenState() {
   } else {
     lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
-    updateStatusIndicator(last_status_enabled, has_task);
+    updateOuterRing(has_task);
+    updateStatusIndicator(last_status_enabled);
   }
 }
 
-// Update status indicator border: green (enabled), red (disabled), yellow (has task)
-void updateStatusIndicator(bool isEnabled, bool hasTask) {
-  if (!status_indicator) return;
+// Outer ring: yellow when there is a task, no border (default) when no task
+void updateOuterRing(bool hasTask) {
+  if (!outer_ring) return;
+  const int outerRingWidth = 14;
   if (hasTask) {
-    lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFFFF00), 0);
-    Serial.println("Status indicator: YELLOW (task)");
-  } else if (isEnabled) {
+    lv_obj_set_style_border_width(outer_ring, outerRingWidth, 0);
+    lv_obj_set_style_border_color(outer_ring, lv_color_hex(0xFFFF00), 0);
+    Serial.println("Outer ring: YELLOW (task)");
+  } else {
+    lv_obj_set_style_border_width(outer_ring, 0, 0);
+    Serial.println("Outer ring: none (no task)");
+  }
+}
+
+// Inner ring: green = enabled, red = disabled
+void updateStatusIndicator(bool isEnabled) {
+  if (!status_indicator) return;
+  if (isEnabled) {
     lv_obj_set_style_border_color(status_indicator, lv_color_hex(0x00FF00), 0);
-    Serial.println("Status indicator: GREEN (enabled)");
+    Serial.println("Inner ring: GREEN (enabled)");
   } else {
     lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFF0000), 0);
-    Serial.println("Status indicator: RED (disabled)");
+    Serial.println("Inner ring: RED (disabled)");
   }
 }
