@@ -49,10 +49,8 @@ lv_obj_t *time_label = nullptr;
 lv_obj_t *time_value = nullptr;
 lv_obj_t *outer_ring = nullptr;             // Outer ring: yellow = task, none/white = no task
 lv_obj_t *status_indicator = nullptr;       // Inner ring: green = enabled, red = disabled
-lv_obj_t *normal_container = nullptr;       // Shown when tool is operational
-lv_obj_t *non_operational_container = nullptr;  // Full red screen when non-operational
-lv_obj_t *non_operational_title = nullptr;
-lv_obj_t *non_operational_task_label = nullptr;
+lv_obj_t *normal_container = nullptr;       // Shown when tool is operational (red + white text when non-operational)
+lv_obj_t *task_summary_label = nullptr;     // Task summary line, visible only when non-operational (same layout as status)
 lv_obj_t *problem_description_label = nullptr;
 lv_obj_t *details_container = nullptr;   // Details screen (problem description)
 lv_obj_t *btn_forward = nullptr;         // Arrow lower-right: go to Details
@@ -352,30 +350,14 @@ void create_simple_ui() {
   lv_obj_set_style_text_color(status_label, lv_color_hex(textColor), 0);
   lv_obj_align(status_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
-  // Non-operational overlay (full red screen, white text), shown when !tool_operational
-  non_operational_container = lv_obj_create(screen);
-  lv_obj_set_size(non_operational_container, DISPLAY_WIDTH, DISPLAY_HEIGHT);
-  lv_obj_set_pos(non_operational_container, 0, 0);
-  lv_obj_set_style_bg_color(non_operational_container, lv_color_hex(0xFF0000), 0);
-  lv_obj_set_style_border_width(non_operational_container, 0, 0);
-  lv_obj_set_style_pad_all(non_operational_container, 16, 0);
-  lv_obj_set_scrollbar_mode(non_operational_container, LV_SCROLLBAR_MODE_OFF);
-  lv_obj_add_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);  // Shown only when non-operational
-
-  non_operational_title = lv_label_create(non_operational_container);
-  String nonOpText = toolDisplayName + " is non-operational";
-  lv_label_set_text(non_operational_title, nonOpText.c_str());
-  lv_obj_set_style_text_font(non_operational_title, titleFont, 0);
-  lv_obj_set_style_text_color(non_operational_title, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_align(non_operational_title, LV_ALIGN_TOP_LEFT, 0, 0);
-  lv_label_set_long_mode(non_operational_title, LV_LABEL_LONG_WRAP);
-
-  non_operational_task_label = lv_label_create(non_operational_container);
-  lv_label_set_text(non_operational_task_label, "");
-  lv_obj_set_style_text_font(non_operational_task_label, valueFont, 0);
-  lv_obj_set_style_text_color(non_operational_task_label, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_align(non_operational_task_label, LV_ALIGN_TOP_LEFT, 0, 70);
-  lv_label_set_long_mode(non_operational_task_label, LV_LABEL_LONG_WRAP);
+  // Task summary line (same layout as status; visible only when non-operational, between title and User)
+  task_summary_label = lv_label_create(status_indicator);
+  lv_label_set_text(task_summary_label, "");
+  lv_obj_set_style_text_font(task_summary_label, valueFont, 0);
+  lv_obj_set_style_text_color(task_summary_label, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_align(task_summary_label, LV_ALIGN_TOP_LEFT, 0, 48);
+  lv_label_set_long_mode(task_summary_label, LV_LABEL_LONG_WRAP);
+  lv_obj_add_flag(task_summary_label, LV_OBJ_FLAG_HIDDEN);  // Shown only when non-operational
 
   // Forward arrow (lower right): go to Details screen
   const int arrowSize = 48;
@@ -428,13 +410,11 @@ void show_status_screen() {
   if (details_container) lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
   if (btn_forward) lv_obj_clear_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
   if (normal_container) lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
-  if (non_operational_container) lv_obj_clear_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
-  applyMainScreenState();  // Restore which of normal/non_operational is visible
+  applyMainScreenState();  // Style normal screen (red+white when non-operational, else white+black)
 }
 
 void show_details_screen() {
   if (normal_container) lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
-  if (non_operational_container) lv_obj_add_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
   if (btn_forward) lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
   if (details_container) lv_obj_clear_flag(details_container, LV_OBJ_FLAG_HIDDEN);
 }
@@ -545,8 +525,6 @@ void processMQTTMessage(const char* topic, const char* payload) {
     tool_operational = doc["operational"] | true;
     if (doc["tool_name"].is<const char*>()) {
       toolDisplayName = capitalizeToolName(doc["tool_name"].as<const char*>());
-      if (non_operational_title)
-        lv_label_set_text(non_operational_title, (toolDisplayName + " is non-operational").c_str());
       if (title_label)
         lv_label_set_text(title_label, toolDisplayName.c_str());
     }
@@ -562,6 +540,10 @@ void processMQTTMessage(const char* topic, const char* payload) {
       task_summary = doc["task_summary"].as<const char*>();
     else
       task_summary = "";
+    // Never show internal event names (e.g. task_shutdown) on the shutdown screen
+    if (task_summary.equalsIgnoreCase("task_shutdown") || task_summary.equalsIgnoreCase("task_updated") ||
+        task_summary.equalsIgnoreCase("task") || task_summary.equalsIgnoreCase("task_created"))
+      task_summary = "";
     if (doc["problem_description"].is<const char*>())
       problem_description = doc["problem_description"].as<const char*>();
     else
@@ -575,9 +557,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
       else
         lv_label_set_text(problem_description_label, "No problem description.");
     }
-    if (non_operational_task_label)
-      lv_label_set_text(non_operational_task_label, task_summary.c_str());
-    
+
     applyMainScreenState();
     Serial.print("Task: has_task=");
     Serial.print(has_task ? "1" : "0");
@@ -589,17 +569,13 @@ void processMQTTMessage(const char* topic, const char* payload) {
   if (strcmp(topic, mqtt_topic_status.c_str()) == 0) {
     if (doc["user_name"].is<const char*>()) {
       const char* userName = doc["user_name"];
-      if (user_value) {
+      if (user_value)
         lv_label_set_text(user_value, userName);
-        lv_obj_set_style_text_color(user_value, lv_color_hex(0x000000), 0);
-      }
     }
     if (doc["timestamp"].is<const char*>()) {
       const char* timestamp = doc["timestamp"];
-      if (time_value) {
+      if (time_value)
         lv_label_set_text(time_value, timestamp);
-        lv_obj_set_style_text_color(time_value, lv_color_hex(0x000000), 0);
-      }
     }
     if (doc["time_label"].is<const char*>()) {
       const char* timeLabelFromPayload = doc["time_label"];
@@ -615,8 +591,6 @@ void processMQTTMessage(const char* topic, const char* payload) {
       if (newDisplayName != toolDisplayName && title_label) {
         toolDisplayName = newDisplayName;
         lv_label_set_text(title_label, toolDisplayName.c_str());
-        if (non_operational_title)
-          lv_label_set_text(non_operational_title, (toolDisplayName + " is non-operational").c_str());
       }
     }
     if (doc["event_type"].is<const char*>()) {
@@ -665,55 +639,84 @@ String capitalizeToolName(const char* toolName) {
   return result;
 }
 
-// Update consolidated connection status
+// Update consolidated connection status (text only; applyMainScreenState sets color by operational state)
 void updateConnectionStatus() {
   if (!status_label) return;
-  
+
   bool wifiConnected = (WiFi.status() == WL_CONNECTED);
   bool mqttConnected = mqttClient.connected();
-  
+
   String statusText = "Status: ";
-  uint32_t statusColor = 0x000000; // Black text for all statuses
-  
+
   if (wifiConnected && mqttConnected) {
-    // Both connected
     statusText += "Connected";
   } else if (wifiConnected && !mqttConnected) {
-    // WiFi connected but MQTT not connected
     statusText += "WiFi OK, No MQTT";
   } else if (!wifiConnected && mqttConnected) {
-    // MQTT connected but WiFi not connected (shouldn't happen, but just in case)
     statusText += "No WiFi, MQTT OK";
   } else {
-    // Neither connected
     statusText += "No WiFi, No MQTT";
   }
-  
+
   lv_label_set_text(status_label, statusText.c_str());
+  // Color is set by applyMainScreenState (white when non-operational, black when operational)
+  uint32_t statusColor = tool_operational ? 0x000000 : 0xFFFFFF;
   lv_obj_set_style_text_color(status_label, lv_color_hex(statusColor), 0);
-  
+
   Serial.print("Updated status: ");
   Serial.println(statusText.c_str());
 }
 
-// Show/hide normal vs non-operational panel; set border color (green/red/yellow)
+// Same layout for operational and non-operational; non-operational = red bg + white text
 void applyMainScreenState() {
-  if (!normal_container || !non_operational_container) return;
-  
+  if (!normal_container || !status_indicator || !outer_ring) return;
+
+  const uint32_t white = 0xFFFFFF;
+  const uint32_t black = 0x000000;
+  const uint32_t red = 0xFF0000;
+
   if (!tool_operational) {
-    lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
-    if (non_operational_title) {
-      String t = toolDisplayName + " is non-operational";
-      lv_label_set_text(non_operational_title, t.c_str());
+    // Same screen, red background, white text, same info (last user, disabled since, connection status)
+    lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(normal_container, lv_color_hex(red), 0);
+    lv_obj_set_style_bg_color(status_indicator, lv_color_hex(red), 0);
+    lv_obj_set_style_border_color(outer_ring, lv_color_hex(red), 0);
+    lv_obj_set_style_border_color(status_indicator, lv_color_hex(red), 0);
+
+    if (title_label) {
+      lv_label_set_text(title_label, (toolDisplayName + " shut down").c_str());
+      lv_obj_set_style_text_color(title_label, lv_color_hex(white), 0);
     }
-    if (non_operational_task_label)
-      lv_label_set_text(non_operational_task_label, task_summary.c_str());
+    if (user_label) lv_obj_set_style_text_color(user_label, lv_color_hex(white), 0);
+    if (user_value) lv_obj_set_style_text_color(user_value, lv_color_hex(white), 0);
+    if (time_label) lv_obj_set_style_text_color(time_label, lv_color_hex(white), 0);
+    if (time_value) lv_obj_set_style_text_color(time_value, lv_color_hex(white), 0);
+    if (status_label) lv_obj_set_style_text_color(status_label, lv_color_hex(white), 0);
+
+    if (task_summary_label) {
+      lv_label_set_text(task_summary_label, task_summary.c_str());
+      lv_obj_set_style_text_color(task_summary_label, lv_color_hex(white), 0);
+      lv_obj_clear_flag(task_summary_label, LV_OBJ_FLAG_HIDDEN);
+    }
   } else {
     lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(non_operational_container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(normal_container, lv_color_hex(white), 0);
+    lv_obj_set_style_bg_color(status_indicator, lv_color_hex(white), 0);
     updateOuterRing(has_task);
     updateStatusIndicator(last_status_enabled);
+
+    if (title_label) {
+      lv_label_set_text(title_label, toolDisplayName.c_str());
+      lv_obj_set_style_text_color(title_label, lv_color_hex(black), 0);
+    }
+    if (user_label) lv_obj_set_style_text_color(user_label, lv_color_hex(black), 0);
+    if (user_value) lv_obj_set_style_text_color(user_value, lv_color_hex(black), 0);
+    if (time_label) lv_obj_set_style_text_color(time_label, lv_color_hex(black), 0);
+    if (time_value) lv_obj_set_style_text_color(time_value, lv_color_hex(black), 0);
+    if (status_label) lv_obj_set_style_text_color(status_label, lv_color_hex(black), 0);
+
+    if (task_summary_label)
+      lv_obj_add_flag(task_summary_label, LV_OBJ_FLAG_HIDDEN);
   }
 }
 

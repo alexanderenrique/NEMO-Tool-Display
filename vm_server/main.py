@@ -15,6 +15,10 @@ import signal
 import sys
 import socket
 from datetime import datetime
+
+# Alias so process_tool_status can use default timestamps without being shadowed by its inner import
+_utcnow = datetime.utcnow
+
 from typing import Dict, List, Optional, Tuple
 
 import paho.mqtt.client as mqtt
@@ -601,7 +605,7 @@ class NEMOToolServer:
             # ----- Separate messages: operational and tasks (independent of status) -----
             if event_type == "non-operational":
                 operational = tool_data.get("operational", False)
-                timestamp_val = tool_data.get("timestamp", datetime.utcnow().isoformat() + "+00:00")
+                timestamp_val = tool_data.get("timestamp", _utcnow().isoformat() + "+00:00")
                 esp32_operational = {
                     "operational": operational,
                     "tool_id": tool_id,
@@ -621,7 +625,7 @@ class NEMOToolServer:
             if event_type == "operational":
                 # Tool back to operational (e.g. nemo/tools/1/operational with operational: true)
                 operational = tool_data.get("operational", True)
-                timestamp_val = tool_data.get("timestamp", datetime.utcnow().isoformat() + "+00:00")
+                timestamp_val = tool_data.get("timestamp", _utcnow().isoformat() + "+00:00")
                 esp32_operational = {
                     "operational": operational,
                     "tool_id": tool_id,
@@ -641,10 +645,25 @@ class NEMOToolServer:
             if event_type == "tasks":
                 event_name = tool_data.get("event", "task")
                 task_id = tool_data.get("task_id")
-                problem_desc = tool_data.get("problem_description", "")
-                task_summary = tool_data.get("task_summary") or tool_data.get("description") or event_name
-                if not isinstance(task_summary, str):
-                    task_summary = str(task_summary) if task_summary is not None else ""
+                cancelled = tool_data.get("cancelled", False)
+                resolved = tool_data.get("resolved", False)
+                # Clear task on display: task_shutdown+cancelled OR task_updated+resolved
+                if (event_name == "task_shutdown" and cancelled) or resolved:
+                    if resolved:
+                        logger.info(f"📥 task resolved=true → clearing task for tool {tool_id} ({tool_name})")
+                    else:
+                        logger.info(f"📥 task_shutdown cancelled=true → clearing task for tool {tool_id} ({tool_name})")
+                    problem_desc = ""
+                    task_summary = ""
+                else:
+                    problem_desc = tool_data.get("problem_description", "")
+                    # Use only task_summary or description; never show internal event names on the display
+                    task_summary = tool_data.get("task_summary") or tool_data.get("description") or ""
+                    if not isinstance(task_summary, str):
+                        task_summary = str(task_summary) if task_summary is not None else ""
+                    # If NEMO sent an internal event name as summary/description, clear it
+                    if task_summary.strip().lower() in ("task_shutdown", "task_updated", "task", "task_created"):
+                        task_summary = ""
                 esp32_task = {
                     "event": event_name,
                     "task_id": task_id,
@@ -715,8 +734,8 @@ class NEMOToolServer:
             
             if timestamp_value:
                 try:
-                    from datetime import datetime, timedelta
-                    dt = datetime.fromisoformat(timestamp_value.replace("Z", "+00:00"))
+                    from datetime import datetime as _dt_parse, timedelta
+                    dt = _dt_parse.fromisoformat(timestamp_value.replace("Z", "+00:00"))
                     dt = dt + timedelta(hours=self.config["timezone_offset_hours"])
                     formatted_time = dt.strftime("%b %d, %I:%M %p")
                     logger.debug(f"Parsed timestamp: {timestamp_value} -> {formatted_time}")
