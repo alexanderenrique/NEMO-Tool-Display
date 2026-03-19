@@ -488,6 +488,23 @@ void setupMQTT() {
   Serial.println("MQTT client configured");
 }
 
+// Map PubSubClient state codes to human-readable text.
+static const char* mqttStateToString(int state) {
+  switch (state) {
+    case 5:  return "MQTT_CONNECT_UNAUTHORIZED";
+    case 4:  return "MQTT_CONNECT_BAD_CREDENTIALS";
+    case 3:  return "MQTT_CONNECT_UNAVAILABLE";
+    case 2:  return "MQTT_CONNECT_BAD_CLIENT_ID";
+    case 1:  return "MQTT_CONNECT_BAD_PROTOCOL";
+    case 0:  return "MQTT_CONNECTED";
+    case -1: return "MQTT_DISCONNECTED";
+    case -2: return "MQTT_CONNECT_FAILED";
+    case -3: return "MQTT_CONNECTION_LOST";
+    case -4: return "MQTT_CONNECTION_TIMEOUT";
+    default:  return "MQTT_UNKNOWN_STATE";
+  }
+}
+
 // MQTT Connection
 void connectMQTT() {
   // Only attempt connection if WiFi is connected
@@ -497,17 +514,63 @@ void connectMQTT() {
   }
   
   if (!mqttClient.connected()) {
+    Serial.println("----- MQTT connect attempt -----");
+
+    Serial.print("WiFi RSSI: ");
+    Serial.println(WiFi.RSSI());
+    Serial.print("WiFi IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("WiFi gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("WiFi subnet: ");
+    Serial.println(WiFi.subnetMask());
+
+    Serial.print("Broker: ");
+    Serial.print(mqtt_broker);
+    Serial.print(":");
+    Serial.println(mqtt_port);
+
+    Serial.print("Client ID: ");
+    Serial.println(mqtt_client_id);
+
+    bool useCreds = (mqtt_username && mqtt_username[0] != '\0' && mqtt_password && mqtt_password[0] != '\0');
+    Serial.print("Auth mode: ");
+    Serial.println(useCreds ? "username+password" : "anonymous/no-auth");
+    if (useCreds) {
+      // Avoid printing the actual password.
+      Serial.print("Username length: ");
+      {
+        int n = 0;
+        while (mqtt_username[n] != '\0') n++;
+        Serial.println(n);
+      }
+      Serial.print("Password length: ");
+      {
+        int n = 0;
+        while (mqtt_password[n] != '\0') n++;
+        Serial.println(n);
+      }
+    }
+
+    Serial.print("WiFiClient connected (before): ");
+    Serial.println(wifiClient.connected() ? "YES" : "NO");
+
     Serial.print("Attempting MQTT connection...");
 
     bool connected = false;
-    if (mqtt_username && mqtt_username[0] != '\0' && mqtt_password && mqtt_password[0] != '\0') {
+
+    unsigned long t0 = millis();
+    if (useCreds) {
       connected = mqttClient.connect(mqtt_client_id, mqtt_username, mqtt_password);
     } else {
       connected = mqttClient.connect(mqtt_client_id);
     }
+    unsigned long elapsed = millis() - t0;
 
     if (connected) {
-      Serial.println(" connected");
+      Serial.print(" connected (elapsed ");
+      Serial.print(elapsed);
+      Serial.println(" ms)");
       Serial.print("Client ID: ");
       Serial.println(mqtt_client_id);
       Serial.print("Broker: ");
@@ -533,9 +596,21 @@ void connectMQTT() {
       // Update status
       updateConnectionStatus();
     } else {
-      Serial.print(" failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" retrying in 5 seconds");
+      int state = mqttClient.state();
+      Serial.print(" failed, state=");
+      Serial.print(state);
+      Serial.print(" (");
+      Serial.print(mqttStateToString(state));
+      Serial.println(")");
+
+      Serial.print("WiFiClient connected (after): ");
+      Serial.println(wifiClient.connected() ? "YES" : "NO");
+
+      Serial.print("Elapsed: ");
+      Serial.print(elapsed);
+      Serial.println(" ms");
+
+      Serial.println("retrying in 5 seconds");
       
       // Update status
       updateConnectionStatus();
