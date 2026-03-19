@@ -497,6 +497,8 @@ class NEMOToolServer:
         """
         topic = msg.topic
         raw_payload = msg.payload.decode(errors="replace")
+        topic_parts = topic.split("/")
+        inferred_event_type = topic_parts[3] if len(topic_parts) >= 4 else None
 
         hmac_key = (self.config.get("mqtt_hmac_key") or "").strip()
 
@@ -530,6 +532,10 @@ class NEMOToolServer:
                 parts = topic.split("/")
                 tool_identifier = parts[2]  # Tool ID or name from topic (e.g., "1" or "woollam" from "nemo/tools/1/start")
                 event_type = parts[3]  # Extract event type (e.g., "start", "end", "enabled", "disabled")
+                logger.info(
+                    f"🔎 route inbound topic={topic} tool_identifier={tool_identifier} "
+                    f"event_type={event_type} payload_type={type(payload).__name__}"
+                )
 
                 # NEMO may publish non-JSON payloads for simple enabled/disabled topics.
                 # Normalize into a dict so downstream processing is consistent.
@@ -563,6 +569,10 @@ class NEMOToolServer:
                 self.process_overall_status(payload)
 
             else:
+                logger.info(
+                    f"🔎 route bypass topic={topic} inferred_event_type={inferred_event_type} "
+                    f"payload_type={type(payload).__name__ if payload is not None else 'None'}"
+                )
                 if payload is None:
                     logger.debug(
                         f"[1886] Other topic: {topic} -> {raw_payload[:200]}{'...' if len(raw_payload) > 200 else ''}"
@@ -643,6 +653,10 @@ class NEMOToolServer:
                 task_id = tool_data.get("task_id")
                 cancelled = tool_data.get("cancelled", False)
                 resolved = tool_data.get("resolved", False)
+                logger.info(
+                    f"🔎 task routing tool_id={tool_id} topic_event={event_type} payload_event={event_name} "
+                    f"task_id={task_id} cancelled={cancelled} resolved={resolved}"
+                )
                 # Clear task on display: task_shutdown+cancelled OR task_updated+resolved
                 if (event_name == "task_shutdown" and cancelled) or resolved:
                     if resolved:
@@ -651,6 +665,7 @@ class NEMOToolServer:
                         logger.info(f"📥 task_shutdown cancelled=true → clearing task for tool {tool_id} ({tool_name})")
                     problem_desc = ""
                     task_summary = ""
+                    clear_reason = "resolved=true" if resolved else "task_shutdown+cancelled=true"
                 else:
                     problem_desc = tool_data.get("problem_description", "")
                     # Use only task_summary or description; never show internal event names on the display
@@ -660,6 +675,7 @@ class NEMOToolServer:
                     # If NEMO sent an internal event name as summary/description, clear it
                     if task_summary.strip().lower() in ("task_shutdown", "task_updated", "task", "task_created"):
                         task_summary = ""
+                    clear_reason = "display_task_content"
                 esp32_task = {
                     "event": event_name,
                     "task_id": task_id,
@@ -669,7 +685,14 @@ class NEMOToolServer:
                 }
                 esp32_topic = f"nemo/esp32/{tool_id}/task"
                 payload_json = json.dumps(esp32_task)
-                logger.info(f"📤 outbound {esp32_topic} | (task_id={task_id}, summary len={len(task_summary)}, problem_description len={len(problem_desc)})")
+                logger.info(
+                    f"📤 outbound {esp32_topic} | route_reason={clear_reason} "
+                    f"(task_id={task_id}, event={event_name}, summary len={len(task_summary)}, "
+                    f"problem_description len={len(problem_desc)})"
+                )
+                logger.info(
+                    f"🔎 esp32 task payload tool_id={tool_id}: {payload_json}"
+                )
                 result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
                 if result.rc == mqtt.MQTT_ERR_SUCCESS:
                     logger.info(f"✅ {tool_name} (ID: {tool_id}): task → ESP32")
