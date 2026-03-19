@@ -14,8 +14,27 @@ from datetime import datetime
 from collections import defaultdict
 from dotenv import load_dotenv
 
+def load_environment():
+    """Load configuration from config.env without hard-failing on permissions."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.path.join(script_dir, "config.env")
+
+    if not os.path.exists(env_path):
+        load_dotenv()
+        return
+
+    if not os.access(env_path, os.R_OK):
+        print(f"⚠️  Cannot read env file: {env_path}. Using existing environment variables.")
+        return
+
+    try:
+        load_dotenv(env_path)
+    except PermissionError:
+        print(f"⚠️  Permission denied reading env file: {env_path}. Using existing environment variables.")
+
+
 # Load configuration from config.env
-load_dotenv('config.env')
+load_environment()
 
 class ComprehensiveMQTTMonitor:
     def __init__(self):

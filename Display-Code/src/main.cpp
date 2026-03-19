@@ -776,10 +776,13 @@ void processMQTTMessage(const char* topic, const char* payload) {
   if (strcmp(topic, mqtt_topic_task.c_str()) == 0) {
     String msg_summary = "";
     String msg_description = "";
+    String msg_event = "";
     if (doc["task_summary"].is<const char*>())
       msg_summary = doc["task_summary"].as<const char*>();
     if (doc["problem_description"].is<const char*>())
       msg_description = doc["problem_description"].as<const char*>();
+    if (doc["event"].is<const char*>())
+      msg_event = doc["event"].as<const char*>();
 
     // Parse task_id (integer or string from JSON)
     bool has_task_id = doc.containsKey("task_id") && !doc["task_id"].isNull();
@@ -810,6 +813,17 @@ void processMQTTMessage(const char* topic, const char* payload) {
       taskStoreAddOrUpdate(task_id_val, msg_summary, msg_description);
       Serial.print("Task add/update id=");
       Serial.println((long)task_id_val);
+    }
+
+    // Shutdown event can arrive on /task before (or without) /operational update.
+    // Force non-operational state immediately so UI switches to red background + white text.
+    if (msg_event.equalsIgnoreCase("task_shutdown")) {
+      tool_operational = false;
+      last_status_enabled = false;
+      Serial.println("Task event=task_shutdown -> forcing non-operational UI state");
+    } else if (msg_event.equalsIgnoreCase("task_resolved") || msg_event.equalsIgnoreCase("task_cleared")) {
+      tool_operational = true;
+      Serial.println("Task event indicates recovery -> forcing operational UI state");
     }
 
     has_task = taskStoreHasAny();

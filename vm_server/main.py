@@ -206,8 +206,9 @@ class NEMOToolServer:
         """MQTT connection callback for NEMO client (port 1886)"""
         if rc == 0:
             logger.info("✅ NEMO MQTT client connected successfully")
-            # Subscribe to all tool events (enabled, disabled, start, end); same handler and HMAC verification for all
-            client.subscribe("nemo/tools/+/+", qos=1)  # nemo/tools/<id>/enabled, .../disabled, .../start, .../end
+            # Subscribe to all tool events (enabled, disabled, start, end, tasks, operational, and base tool updates).
+            client.subscribe("nemo/tools/+/+", qos=1)  # nemo/tools/<id>/enabled, .../disabled, .../start, .../end, .../tasks, .../operational
+            client.subscribe("nemo/tools/+", qos=1)    # nemo/tools/<id> (e.g. {"event":"tool_updated","tool_status":true})
             client.subscribe("nemo/tools/overall", qos=1)
             logger.info("📥 Subscribed to NEMO tool status updates (nemo/tools only)")
         else:
@@ -528,10 +529,12 @@ class NEMOToolServer:
 
         try:
             # Handle individual tool status updates
-            if topic.startswith("nemo/tools/") and len(topic.split("/")) >= 4:
+            if topic.startswith("nemo/tools/") and len(topic.split("/")) >= 3:
                 parts = topic.split("/")
                 tool_identifier = parts[2]  # Tool ID or name from topic (e.g., "1" or "woollam" from "nemo/tools/1/start")
-                event_type = parts[3]  # Extract event type (e.g., "start", "end", "enabled", "disabled")
+                event_type = parts[3] if len(parts) >= 4 else None  # Optional event type for base topic nemo/tools/<id>
+                if event_type is None and isinstance(payload, dict) and isinstance(payload.get("event"), str):
+                    event_type = payload.get("event")
                 logger.info(
                     f"🔎 route inbound topic={topic} tool_identifier={tool_identifier} "
                     f"event_type={event_type} payload_type={type(payload).__name__}"
@@ -646,6 +649,28 @@ class NEMOToolServer:
                     logger.info(f"✅ {tool_name} (ID: {tool_id}): operational={operational} → ESP32")
                 else:
                     logger.error(f"❌ Failed to forward operational: {result.rc}")
+                return
+
+            # Base update topic support: nemo/tools/<id> with {"event":"tool_updated","tool_status":<bool>}
+            if event_type == "tool_updated" and "tool_status" in tool_data:
+                operational = bool(tool_data.get("tool_status"))
+                timestamp_val = tool_data.get("timestamp", _utcnow().isoformat() + "+00:00")
+                esp32_operational = {
+                    "operational": operational,
+                    "tool_id": tool_id,
+                    "tool_name": tool_name,
+                    "timestamp": timestamp_val,
+                }
+                esp32_topic = f"nemo/esp32/{tool_id}/operational"
+                payload_json = json.dumps(esp32_operational)
+                logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
+                result = self.mqtt_client_esp32.publish(esp32_topic, payload_json, qos=1, retain=True)
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    logger.info(
+                        f"✅ {tool_name} (ID: {tool_id}): tool_updated tool_status={operational} → ESP32 operational"
+                    )
+                else:
+                    logger.error(f"❌ Failed to forward tool_updated operational: {result.rc}")
                 return
 
             if event_type == "tasks":
