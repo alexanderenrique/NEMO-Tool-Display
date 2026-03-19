@@ -498,10 +498,6 @@ class NEMOToolServer:
         topic = msg.topic
         raw_payload = msg.payload.decode(errors="replace")
 
-        # For testing: show raw value received from NEMO
-        raw_preview = raw_payload if len(raw_payload) <= 500 else raw_payload[:500] + "..."
-        logger.info(f"📥 raw from NEMO  {topic} | {raw_preview}")
-
         hmac_key = (self.config.get("mqtt_hmac_key") or "").strip()
 
         # For nemo/tools/... when HMAC is required, enforce envelope contract: reject if not envelope-shaped.
