@@ -50,7 +50,10 @@ class ComprehensiveMQTTMonitor:
             result = client.subscribe("#", qos=1)  # Subscribe to all topics with QoS 1
             print(f"   📡 Subscribed to all topics on port {self.mqtt_port_esp32} (result: {result})")
         else:
-            print(f"❌ Failed to connect to port {self.mqtt_port_esp32}: {rc}")
+            print(
+                f"❌ Failed to connect to port {self.mqtt_port_esp32}: {rc} "
+                f"({mqtt.error_string(rc)})"
+            )
     
     def on_subscribe_1883(self, client, userdata, mid, granted_qos):
         """Subscription confirmation callback for ESP32 port"""
@@ -62,7 +65,23 @@ class ComprehensiveMQTTMonitor:
             print(f"✅ Connected to port {self.mqtt_port} (NEMO Dev)")
             client.subscribe("#")  # Subscribe to all topics
         else:
-            print(f"❌ Failed to connect to port {self.mqtt_port}: {rc}")
+            print(f"❌ Failed to connect to port {self.mqtt_port}: {rc} ({mqtt.error_string(rc)})")
+
+    def on_disconnect_1883(self, client, userdata, rc):
+        """Disconnect callback for ESP32 port"""
+        if rc != 0:
+            print(
+                f"⚠️  Disconnected from port {self.mqtt_port_esp32} unexpectedly: "
+                f"{rc} ({mqtt.error_string(rc)})"
+            )
+
+    def on_disconnect_1884(self, client, userdata, rc):
+        """Disconnect callback for NEMO port"""
+        if rc != 0:
+            print(
+                f"⚠️  Disconnected from port {self.mqtt_port} unexpectedly: "
+                f"{rc} ({mqtt.error_string(rc)})"
+            )
     
     def on_message_1883(self, client, userdata, msg):
         """Message callback for ESP32 port"""
@@ -206,25 +225,29 @@ class ComprehensiveMQTTMonitor:
         print("=" * 80)
         
         # Create clients for ports 1883 (ESP32s) and NEMO port from config
-        client_1883 = mqtt.Client()
-        client_1884 = mqtt.Client()
+        client_1883 = mqtt.Client(client_id=f"mqtt-monitor-esp32-{os.getpid()}")
+        client_1884 = mqtt.Client(client_id=f"mqtt-monitor-nemo-{os.getpid()}")
         
         # Set up callbacks for port 1883
         client_1883.on_connect = self.on_connect_1883
         client_1883.on_message = self.on_message_1883
         client_1883.on_subscribe = self.on_subscribe_1883
+        client_1883.on_disconnect = self.on_disconnect_1883
         
         # Set up callbacks for NEMO port
         client_1884.on_connect = self.on_connect_1884
         client_1884.on_message = self.on_message_1884
+        client_1884.on_disconnect = self.on_disconnect_1884
         
         try:
+            if self.mqtt_username and self.mqtt_password:
+                client_1883.username_pw_set(self.mqtt_username, self.mqtt_password)
+                client_1884.username_pw_set(self.mqtt_username, self.mqtt_password)
+
             # Connect to ESP32 port
             print(f"Connecting to {self.mqtt_broker}:{self.mqtt_port_esp32} (ESP32s)...")
             client_1883.connect(self.mqtt_broker, self.mqtt_port_esp32, 60)
-            
-            if self.mqtt_username and self.mqtt_password:
-                client_1884.username_pw_set(self.mqtt_username, self.mqtt_password)
+
             print(f"Connecting to {self.mqtt_broker}:{self.mqtt_port} (NEMO)...")
             client_1884.connect(self.mqtt_broker, self.mqtt_port, 60)
             
