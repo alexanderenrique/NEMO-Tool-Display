@@ -391,25 +391,54 @@ setup_broker_auth() {
     print_info "Broker will use allow_anonymous false and password_file"
 }
 
-# Function to ensure MQTT directories and files have correct permissions for the user running Mosquitto
+# Function to ensure MQTT directories and files are readable/writable by the user that runs Mosquitto
 ensure_mqtt_permissions() {
     mkdir -p "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"
-    # When run with sudo (e.g. after deploy to /opt), give ownership to the invoking user
-    if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
-        chown -R "$SUDO_UID:$SUDO_GID" "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
+
+    local target_u target_g
+    if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && [ "${EUID:-$(id -u)}" -eq 0 ]; then
+        target_u="$SUDO_UID"
+        target_g="$SUDO_GID"
+    else
+        target_u="$(id -u)"
+        target_g="$(id -g)"
     fi
+
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+        if ! touch "$MQTT_LOG_DIR/.perm_test_$$" 2>/dev/null || { [ -f "$MQTT_CONFIG_DIR/passwd" ] && [ ! -r "$MQTT_CONFIG_DIR/passwd" ]; }; then
+            print_warning "MQTT tree not accessible as $(id -un); fixing ownership with sudo..."
+            if ! sudo chown -R "$target_u:$target_g" "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"; then
+                print_error "Could not fix permissions. Run once:"
+                echo "  sudo chown -R $(id -un):$(id -gn) \"$MQTT_CONFIG_DIR\" \"$MQTT_DATA_DIR\" \"$MQTT_LOG_DIR\""
+                return 1
+            fi
+        fi
+        rm -f "$MQTT_LOG_DIR/.perm_test_$$" 2>/dev/null || true
+    else
+        chown -R "$target_u:$target_g" "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
+    fi
+
     chmod 755 "$MQTT_CONFIG_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
     chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
     if [ -f "$MQTT_CONFIG_DIR/passwd" ]; then
         chmod 600 "$MQTT_CONFIG_DIR/passwd" 2>/dev/null || true
-        [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && chown "$SUDO_UID:$SUDO_GID" "$MQTT_CONFIG_DIR/passwd" 2>/dev/null || true
     fi
     touch "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
     chmod 644 "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
-    [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && chown "$SUDO_UID:$SUDO_GID" "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
     if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
         chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
     fi
+
+    if ! touch "$MQTT_LOG_DIR/.perm_verify_$$" 2>/dev/null; then
+        print_error "Cannot write $MQTT_LOG_DIR after permission fix."
+        return 1
+    fi
+    rm -f "$MQTT_LOG_DIR/.perm_verify_$$" 2>/dev/null || true
+    if [ -f "$MQTT_CONFIG_DIR/passwd" ] && [ ! -r "$MQTT_CONFIG_DIR/passwd" ]; then
+        print_error "Cannot read $MQTT_CONFIG_DIR/passwd after permission fix."
+        return 1
+    fi
+    return 0
 }
 
 # Decide how to run Mosquitto: as current user, or as the user who ran sudo (so broker can read passwd and write log)
@@ -440,8 +469,8 @@ create_mosquitto_config() {
     mkdir -p "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"
     
     # Ensure correct permissions so Mosquitto can read config/passwd and write log
-    ensure_mqtt_permissions
-    
+    ensure_mqtt_permissions || return 1
+
     # Get ports from config.env (set by write_config_env)
     ESP32_PORT=$(_get_esp32_port)
     NEMO_PORT=$(_get_nemo_port)
@@ -562,7 +591,7 @@ start_services() {
     fi
     
     # Ensure MQTT dirs and files have correct permissions before starting
-    ensure_mqtt_permissions
+    ensure_mqtt_permissions || return 1
 
     # Try to start Mosquitto and capture any errors (run as invoking user when using sudo so broker can access log/passwd)
     MOSQUITTO_ERROR=$(run_mosquitto mosquitto -c "$CONFIG_FILE" -d 2>&1)

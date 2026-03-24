@@ -77,24 +77,74 @@ get_mqtt_ports() {
     echo "$(get_esp32_port) $(get_nemo_port)"
 }
 
-# Ensure MQTT directories and files have correct permissions for the user running Mosquitto
+# Ensure MQTT directories and files are readable/writable by the user that runs Mosquitto.
+# Fixes deploys under /opt where mqtt/ was created as root while quick_restart runs as a normal user.
 ensure_mqtt_permissions() {
     mkdir -p "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"
-    if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
-        chown -R "$SUDO_UID:$SUDO_GID" "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
+
+    local target_u target_g
+    if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && [ "${EUID:-$(id -u)}" -eq 0 ]; then
+        target_u="$SUDO_UID"
+        target_g="$SUDO_GID"
+    else
+        target_u="$(id -u)"
+        target_g="$(id -g)"
     fi
+
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+        if ! touch "$MQTT_LOG_DIR/.perm_test_$$" 2>/dev/null || { [ -f "$MQTT_CONFIG_DIR/passwd" ] && [ ! -r "$MQTT_CONFIG_DIR/passwd" ]; }; then
+            print_warning "MQTT tree not accessible as $(id -un); fixing ownership with sudo..."
+            if ! sudo chown -R "$target_u:$target_g" "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR"; then
+                print_error "Could not fix permissions. Run once:"
+                echo "  sudo chown -R $(id -un):$(id -gn) \"$MQTT_CONFIG_DIR\" \"$MQTT_DATA_DIR\" \"$MQTT_LOG_DIR\""
+                return 1
+            fi
+        fi
+        rm -f "$MQTT_LOG_DIR/.perm_test_$$" 2>/dev/null || true
+    else
+        chown -R "$target_u:$target_g" "$MQTT_CONFIG_DIR" "$MQTT_DATA_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
+    fi
+
     chmod 755 "$MQTT_CONFIG_DIR" "$MQTT_LOG_DIR" 2>/dev/null || true
     chmod 700 "$MQTT_DATA_DIR" 2>/dev/null || true
     if [ -f "$MQTT_CONFIG_DIR/passwd" ]; then
         chmod 600 "$MQTT_CONFIG_DIR/passwd" 2>/dev/null || true
-        [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && chown "$SUDO_UID:$SUDO_GID" "$MQTT_CONFIG_DIR/passwd" 2>/dev/null || true
     fi
     touch "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
     chmod 644 "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
-    [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ] && chown "$SUDO_UID:$SUDO_GID" "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
     if [ -f "$MQTT_DATA_DIR/mosquitto.db" ]; then
         chmod 600 "$MQTT_DATA_DIR/mosquitto.db" 2>/dev/null || true
     fi
+
+    if ! touch "$MQTT_LOG_DIR/.perm_verify_$$" 2>/dev/null; then
+        print_error "Cannot write $MQTT_LOG_DIR after permission fix."
+        return 1
+    fi
+    rm -f "$MQTT_LOG_DIR/.perm_verify_$$" 2>/dev/null || true
+    if [ -f "$MQTT_CONFIG_DIR/passwd" ] && [ ! -r "$MQTT_CONFIG_DIR/passwd" ]; then
+        print_error "Cannot read $MQTT_CONFIG_DIR/passwd after permission fix."
+        return 1
+    fi
+    return 0
+}
+
+# Run Mosquitto as the invoking user when this script was started with sudo (matches setup.sh).
+run_mosquitto() {
+    if [ "$(id -u)" = "0" ] && [ -n "${SUDO_UID:-}" ]; then
+        local run_user
+        run_user=$(id -un "$SUDO_UID" 2>/dev/null || true)
+        if [ -n "$run_user" ]; then
+            if command -v runuser >/dev/null 2>&1; then
+                runuser -u "$run_user" -- "$@"
+                return
+            fi
+            if command -v sudo >/dev/null 2>&1; then
+                sudo -u "$run_user" -- "$@"
+                return
+            fi
+        fi
+    fi
+    "$@"
 }
 
 # Kill any process bound to a given port; use sudo if needed.
@@ -210,15 +260,20 @@ start_services() {
     sleep 1
 
     # Ensure MQTT dirs and files have correct permissions so Mosquitto can read passwd and write log
-    ensure_mqtt_permissions
+    if ! ensure_mqtt_permissions; then
+        return 1
+    fi
 
     # Ensure broker config has two distinct ports (fixes 1883+1883 from bad config)
     ensure_mosquitto_conf_listeners "$esp32_port" "$nemo_port"
 
-    # Start MQTT broker (passive: binds to localhost on config ports)
+    # Start MQTT broker (run as invoking user when script was sudo'd — same as setup.sh)
     print_info "Starting MQTT broker on localhost:$esp32_port, localhost:$nemo_port..."
-    echo "=== quick_restart.sh $(date) ===" >> "$MQTT_LOG_DIR/mosquitto.log" 2>/dev/null || true
-    mosquitto -c "$CONFIG_FILE" -d
+    if ! echo "=== quick_restart.sh $(date) ===" >> "$MQTT_LOG_DIR/mosquitto.log"; then
+        print_error "Cannot append to $MQTT_LOG_DIR/mosquitto.log (permissions?)"
+        return 1
+    fi
+    run_mosquitto mosquitto -c "$CONFIG_FILE" -d
 
     if ! wait_for_port "$nemo_port" 15; then
         print_error "MQTT broker did not start (port $nemo_port not listening after 15s)"
@@ -227,7 +282,11 @@ start_services() {
             tail -n 25 "$MQTT_LOG_DIR/mosquitto.log" | sed 's/^/  /'
         fi
         print_info "Attempting to start broker in foreground to capture error:"
-        timeout 3 mosquitto -c "$CONFIG_FILE" 2>&1 | sed 's/^/  /' || true
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 3 run_mosquitto mosquitto -c "$CONFIG_FILE" 2>&1 | sed 's/^/  /' || true
+        else
+            run_mosquitto mosquitto -c "$CONFIG_FILE" 2>&1 | sed 's/^/  /' | head -40 || true
+        fi
         return 1
     fi
     print_success "MQTT broker listening on localhost:$esp32_port, localhost:$nemo_port"
