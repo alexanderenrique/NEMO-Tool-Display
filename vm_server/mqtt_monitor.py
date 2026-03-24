@@ -5,7 +5,9 @@ Combines broker status monitoring, message watching, and traffic analysis
 """
 
 import paho.mqtt.client as mqtt
+import subprocess
 import threading
+import textwrap
 import time
 import sys
 import os
@@ -54,21 +56,30 @@ def load_environment():
 load_environment()
 
 class ComprehensiveMQTTMonitor:
+    """Subscribes to '#' on both listener ports (all non-$SYS traffic logged). $SYS ingested for periodic status."""
+
+    STATUS_INTERVAL_SEC = 10.0
+
     def __init__(self):
         self.running = True
         self.message_count = 0
         self.topic_stats = defaultdict(int)
-        
+        self._stats_lock = threading.Lock()
+        # Mosquitto $SYS/broker/... (updated when broker publishes; shown every STATUS_INTERVAL_SEC)
+        self.sys_broker_clients_connected: Optional[int] = None
+        self.sys_broker_clients_maximum: Optional[int] = None
+        self.sys_broker_uptime: Optional[int] = None
+
         # Read MQTT configuration from environment
         self.mqtt_broker = os.getenv('MQTT_BROKER', 'localhost')
         self.mqtt_port_esp32 = int(os.getenv('MQTT_PORT_ESP32', '1883'))
         self.mqtt_port = int(os.getenv('MQTT_PORT', '1886'))
         self.mqtt_username = os.getenv('MQTT_USERNAME', '')
         self.mqtt_password = os.getenv('MQTT_PASSWORD', '')
-        
+
         self.port_stats = {str(self.mqtt_port_esp32): 0, str(self.mqtt_port): 0}
         self.start_time = datetime.now()
-        
+
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -83,8 +94,9 @@ class ComprehensiveMQTTMonitor:
         """Connection callback for ESP32 port"""
         if rc == 0:
             print(f"✅ Connected to port {self.mqtt_port_esp32} (ESP32s)")
-            result = client.subscribe("#", qos=1)  # Subscribe to all topics with QoS 1
-            print(f"   📡 Subscribed to all topics on port {self.mqtt_port_esp32} (result: {result})")
+            # All application topics + broker $SYS (for connection counts)
+            result = client.subscribe([("#", 1), ("$SYS/#", 1)])
+            print(f"   📡 Subscribed # and $SYS/# on port {self.mqtt_port_esp32} (result: {result})")
         else:
             print(
                 f"❌ Failed to connect to port {self.mqtt_port_esp32}: {rc} "
@@ -96,10 +108,11 @@ class ComprehensiveMQTTMonitor:
         print(f"   ✅ Subscription confirmed for port {self.mqtt_port_esp32} (QoS: {granted_qos})")
     
     def on_connect_1884(self, client, userdata, flags, rc):
-        """Connection callback for NEMO Dev port"""
+        """Connection callback for NEMO port"""
         if rc == 0:
-            print(f"✅ Connected to port {self.mqtt_port} (NEMO Dev)")
-            client.subscribe("#")  # Subscribe to all topics
+            print(f"✅ Connected to port {self.mqtt_port} (NEMO)")
+            result = client.subscribe([("#", 1), ("$SYS/#", 1)])
+            print(f"   📡 Subscribed # and $SYS/# on port {self.mqtt_port} (result: {result})")
         else:
             print(f"❌ Failed to connect to port {self.mqtt_port}: {rc} ({mqtt.error_string(rc)})")
 
@@ -122,44 +135,128 @@ class ComprehensiveMQTTMonitor:
     def on_message_1883(self, client, userdata, msg):
         """Message callback for ESP32 port"""
         self.log_message("ESP32s", msg, str(self.mqtt_port_esp32))
-    
+
     def on_message_1884(self, client, userdata, msg):
         """Message callback for NEMO port"""
         self.log_message("NEMO", msg, str(self.mqtt_port))
-    
+
+    def _ingest_sys_message(self, msg):
+        """Update broker stats from $SYS; do not spam the console per message."""
+        txt = msg.payload.decode("utf-8", errors="replace").strip()
+        with self._stats_lock:
+            if msg.topic == "$SYS/broker/clients/connected":
+                try:
+                    self.sys_broker_clients_connected = int(txt)
+                except ValueError:
+                    self.sys_broker_clients_connected = None
+            elif msg.topic == "$SYS/broker/clients/maximum":
+                try:
+                    self.sys_broker_clients_maximum = int(txt)
+                except ValueError:
+                    self.sys_broker_clients_maximum = None
+            elif msg.topic == "$SYS/broker/uptime":
+                try:
+                    self.sys_broker_uptime = int(txt)
+                except ValueError:
+                    self.sys_broker_uptime = None
+
+    def _format_raw_payload_lines(self, label: str, payload: bytes, is_nemo_port: bool):
+        """Full payload for debugging (NEMO emphasized)."""
+        lines = []
+        utf8 = payload.decode("utf-8", errors="replace")
+        header = f"📦 RAW NEMO — {label}" if is_nemo_port else f"📦 RAW — {label}"
+        lines.append(f"                    {header} ({len(payload)} bytes) UTF-8:")
+        indented = textwrap.indent(utf8, "                    │ ") if utf8 else "                    │ <empty>"
+        lines.append(indented)
+        if any(b < 32 and b not in (9, 10, 13) for b in payload[:4096]):
+            lines.append(f"                    │ hex: {payload.hex()}")
+        return lines
+
     def log_message(self, source, msg, port):
-        """Log and analyze incoming messages"""
+        """Log all subscribed traffic; $SYS updates metrics only."""
+        if msg.topic.startswith("$SYS/"):
+            self._ingest_sys_message(msg)
+            return
+
         self.message_count += 1
         self.topic_stats[msg.topic] += 1
         self.port_stats[port] += 1
-        
+
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        
-        # Determine direction based on topic and port
+        is_nemo_port = port == str(self.mqtt_port)
+
         if port == str(self.mqtt_port_esp32):
             if "esp32" in msg.topic.lower():
                 direction = "📤 TO ESP32"
             else:
                 direction = "📥 FROM ESP32"
         else:
-            direction = "📥 RECEIVED"
-        
-        # Format message based on content
-        try:
-            if len(msg.payload) > 200:
-                payload_preview = msg.payload[:200].decode('utf-8', errors='ignore') + "..."
-            else:
-                payload_preview = msg.payload.decode('utf-8', errors='ignore')
-        except:
-            payload_preview = f"<binary data: {len(msg.payload)} bytes>"
-        
-        # Color coding based on topic
+            direction = "📥 ON NEMO PORT"
+
         topic_color = self.get_topic_color(msg.topic)
-        
-        print(f"[{timestamp}] [{source:>6}] {direction} {topic_color} {msg.topic}")
-        print(f"                    💬 {payload_preview}")
-        print(f"                    📊 QoS:{msg.qos} | Retain:{msg.retain} | Size:{len(msg.payload)} bytes")
-        print("─" * 80)
+
+        print(f"[{timestamp}] [{source:>6}] {direction} {topic_color} {msg.topic}", flush=True)
+        print(
+            f"                    📊 QoS:{msg.qos} | Retain:{msg.retain} | Size:{len(msg.payload)} bytes",
+            flush=True,
+        )
+        for ln in self._format_raw_payload_lines("payload", msg.payload, is_nemo_port=is_nemo_port):
+            print(ln, flush=True)
+        print("─" * 80, flush=True)
+
+    def _tcp_established_count(self, port: int) -> Optional[int]:
+        """Count TCP ESTABLISHED sessions on this listener (debug: who has a socket open)."""
+        try:
+            r = subprocess.run(
+                ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:ESTABLISHED"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+        lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
+        if not lines:
+            return 0
+        # lsof prints a header row
+        return max(0, len(lines) - 1)
+
+    def print_periodic_connection_status(self):
+        """Every STATUS_INTERVAL_SEC: broker $SYS + per-listener TCP counts."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        tcp_e = self._tcp_established_count(self.mqtt_port_esp32)
+        tcp_n = self._tcp_established_count(self.mqtt_port)
+        with self._stats_lock:
+            sys_c = self.sys_broker_clients_connected
+            sys_max = self.sys_broker_clients_maximum
+            up = self.sys_broker_uptime
+
+        print(f"\n{'=' * 80}", flush=True)
+        print(f"[{now}] 🔌 Connection snapshot (every {int(self.STATUS_INTERVAL_SEC)}s)", flush=True)
+        print(
+            f"  Broker $SYS clients connected: "
+            f"{sys_c if sys_c is not None else '(waiting for $SYS — subscribe did not receive yet)'}",
+            flush=True,
+        )
+        if sys_max is not None:
+            print(f"  Broker $SYS clients maximum (session peak): {sys_max}", flush=True)
+        if up is not None:
+            print(f"  Broker $SYS uptime (seconds): {up}", flush=True)
+        print(
+            f"  TCP ESTABLISHED on port {self.mqtt_port_esp32} (ESP32 listener): "
+            f"{tcp_e if tcp_e is not None else '(lsof unavailable)'}",
+            flush=True,
+        )
+        print(
+            f"  TCP ESTABLISHED on port {self.mqtt_port} (NEMO listener): "
+            f"{tcp_n if tcp_n is not None else '(lsof unavailable)'}",
+            flush=True,
+        )
+        print(
+            "  Note: counts include this monitor (2 MQTT) + main.py + any backends/displays.",
+            flush=True,
+        )
+        print(f"{'=' * 80}\n", flush=True)
     
     def get_topic_color(self, topic):
         """Get color emoji based on topic type"""
@@ -303,25 +400,19 @@ class ComprehensiveMQTTMonitor:
             thread_1884.start()
             
             print(f"\n✅ Monitoring ports:")
-            print(f"   📥 Port {self.mqtt_port} - Receiving from NEMO")
-            print(f"   📤 Port {self.mqtt_port_esp32} - Publishing to ESP32s")
+            print(f"   📥 Port {self.mqtt_port} - All topics (#) + $SYS/# (NEMO listener)")
+            print(f"   📤 Port {self.mqtt_port_esp32} - All topics (#) + $SYS/# (ESP32 listener)")
             print("=" * 80)
-            
-            # Main monitoring loop
-            # last_status_update = time.time()
+
+            time.sleep(1.5)  # allow $SYS messages after subscribe
+            self.print_periodic_connection_status()
+
+            last_status = time.monotonic()
             while self.running:
-                # current_time = time.time()
-                
-                # Update status every 30 seconds - DISABLED
-                # if current_time - last_status_update > 30:
-                #     self.print_status_header()
-                #     self.print_broker_status()
-                #     self.print_message_stats()
-                #     self.print_recent_activity()
-                #     print(f"\n🔄 Refreshing in 30 seconds... (Ctrl+C to stop)")
-                #     last_status_update = current_time
-                
-                time.sleep(1)
+                time.sleep(0.2)
+                if time.monotonic() - last_status >= self.STATUS_INTERVAL_SEC:
+                    self.print_periodic_connection_status()
+                    last_status = time.monotonic()
                 
         except KeyboardInterrupt:
             print(f"\n\n🛑 Monitoring stopped by user")
