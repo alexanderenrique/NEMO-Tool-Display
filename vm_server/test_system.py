@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta
+from typing import Optional
 
 from paho.mqtt import client as mqtt_client
 
@@ -68,6 +69,33 @@ def _apply_mqtt_auth(client):
 
 def _mqtt_client_id(prefix: str) -> str:
     return f"{prefix}_{os.getpid()}"
+
+
+# CONNACK codes (broker → client on connect); not the same as paho MQTT_ERR_* on subscribe().
+_CONNACK_REASONS = {
+    0: "connection accepted",
+    1: "unacceptable protocol version",
+    2: "identifier rejected",
+    3: "server unavailable",
+    4: "bad user name or password",
+    5: "not authorized",
+}
+
+
+def connack_description(rc: Optional[int]) -> str:
+    if rc is None:
+        return "no CONNACK (timeout or disconnect)"
+    extra = _CONNACK_REASONS.get(rc, "unknown")
+    return f"{rc} — {extra}"
+
+
+def _warn_if_no_mqtt_credentials():
+    user, password = _mqtt_credentials()
+    if not user or not password:
+        print_warning(
+            "MQTT_USERNAME and MQTT_PASSWORD must both be set in config.env when the broker "
+            "uses password_file / allow_anonymous false (typical CONNACK: 4 or 5)."
+        )
 
 
 def check_port_listening(port):
@@ -187,19 +215,25 @@ def test_message_parsing():
 def test_esp32_connection():
     """MQTT publish to ESP32 listener (validates broker + credentials on ESP32 port)."""
     print_header("ESP32 MQTT Test")
+    _warn_if_no_mqtt_credentials()
 
     esp32_port = get_esp32_port()
     broker = get_mqtt_broker()
     client = mqtt_client.Client(_mqtt_client_id("test_esp32"))
     _apply_mqtt_auth(client)
     ok = {"connected": False}
+    conn_done = threading.Event()
 
     def on_connect(cl, userdata, flags, rc):
         ok["connected"] = rc == 0
         if rc == 0:
             print_success(f"ESP32 client connected to {broker}:{esp32_port}")
         else:
-            print_error(f"ESP32 client connection failed: {rc}")
+            print_error(
+                f"ESP32 client connection failed: {connack_description(rc)} "
+                f"(check mqtt/config/passwd matches MQTT_USERNAME / MQTT_PASSWORD in config.env)"
+            )
+        conn_done.set()
 
     def on_publish(cl, userdata, mid):
         print_success(f"ESP32 message published (mid: {mid})")
@@ -210,7 +244,11 @@ def test_esp32_connection():
     try:
         client.connect(broker, esp32_port, 60)
         client.loop_start()
-        time.sleep(2)
+        if not conn_done.wait(timeout=15.0):
+            print_error("ESP32 client: timed out waiting for broker CONNACK")
+            client.loop_stop()
+            client.disconnect()
+            return False
 
         if not ok["connected"]:
             client.loop_stop()
@@ -253,6 +291,7 @@ def test_esp32_connection():
 def test_nemo_connection():
     """MQTT subscribe on NEMO listener (same topic patterns as main.py)."""
     print_header("NEMO MQTT Test")
+    _warn_if_no_mqtt_credentials()
 
     nemo_port = get_nemo_port()
     broker = get_mqtt_broker()
@@ -261,10 +300,34 @@ def test_nemo_connection():
     try:
         client = mqtt_client.Client(_mqtt_client_id("test_nemo"))
         _apply_mqtt_auth(client)
+        conn_done = threading.Event()
+        conn_rc = {"rc": None}
+
+        def on_connect(cl, userdata, flags, rc):
+            conn_rc["rc"] = rc
+            if rc == 0:
+                print_success(f"NEMO MQTT client connected to {broker}:{nemo_port}")
+            else:
+                print_error(
+                    f"NEMO MQTT connection failed: {connack_description(rc)} "
+                    f"(subscribe rc=4 often means not connected yet or auth failed)"
+                )
+            conn_done.set()
+
+        client.on_connect = on_connect
 
         client.connect(broker, nemo_port, 60)
         client.loop_start()
-        time.sleep(0.8)
+        if not conn_done.wait(timeout=15.0):
+            print_error("NEMO client: timed out waiting for broker CONNACK")
+            client.loop_stop()
+            client.disconnect()
+            return False
+
+        if conn_rc["rc"] != 0:
+            client.loop_stop()
+            client.disconnect()
+            return False
 
         subs = [
             ("nemo/tools/+/+", 1),
@@ -275,7 +338,11 @@ def test_nemo_connection():
         for topic, qos in subs:
             rc, _mid = client.subscribe(topic, qos)
             if rc != 0:
-                print_error(f"Subscribe {topic!r} failed rc={rc}")
+                try:
+                    detail = mqtt_client.error_string(rc)
+                except Exception:
+                    detail = "paho MQTT_ERR_* (4=not connected)"
+                print_error(f"Subscribe {topic!r} failed: {detail} (rc={rc})")
                 sub_ok = False
 
         if sub_ok:
@@ -321,6 +388,12 @@ def test_system_processes():
                 print_success(f"{process_name}: Running (PIDs: {', '.join(pids)})")
             else:
                 print_error(f"{process_name}: Not running")
+                if process_name == "NEMO Server":
+                    print_info(
+                        "Start from vm_server with config.env present: "
+                        "source venv/bin/activate && python3 main.py "
+                        "(main.py now loads config.env beside the script, not the shell cwd.)"
+                    )
                 all_running = False
         except Exception as e:
             print_error(f"{process_name}: Error checking ({e})")

@@ -15,6 +15,7 @@ import signal
 import sys
 import socket
 from datetime import datetime
+from pathlib import Path
 
 # Alias so process_tool_status can use default timestamps without being shadowed by its inner import
 _utcnow = datetime.utcnow
@@ -25,8 +26,9 @@ import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 from config_parser import get_mqtt_ports, get_esp32_port, get_nemo_port, get_mqtt_broker
 
-# Load environment variables
-load_dotenv('config.env')
+# Always resolve next to this script (systemd/cron/other cwd must not break config)
+_CONFIG_ENV_PATH = Path(__file__).resolve().parent / "config.env"
+load_dotenv(_CONFIG_ENV_PATH)
 
 # Configuration validation and loading
 def load_config():
@@ -875,11 +877,9 @@ class NEMOToolServer:
 
 def validate_environment():
     """Validate that all required files and dependencies are present"""
-    required_files = ['config.env']
-    missing_files = [f for f in required_files if not os.path.exists(f)]
-    if missing_files:
-        logger.error(f"Missing required files: {', '.join(missing_files)}")
-        logger.error("Please ensure all required files are present before starting the server")
+    if not _CONFIG_ENV_PATH.is_file():
+        logger.error(f"Missing required file: {_CONFIG_ENV_PATH}")
+        logger.error("Please ensure config.env exists beside main.py before starting the server")
         return False
     return True
 
