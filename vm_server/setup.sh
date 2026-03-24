@@ -123,6 +123,31 @@ install_mosquitto() {
     fi
 }
 
+# Wait until neither ESP32 nor NEMO MQTT port has a listener (timeout seconds).
+_wait_mqtt_ports_free() {
+    local esp32=$1 nemo=$2 timeout=${3:-5}
+    local deadline=$(($(date +%s) + timeout))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if ! lsof -ti :"$esp32" >/dev/null 2>&1 && ! lsof -ti :"$nemo" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+# Poll until our mosquitto process appears or timeout (seconds).
+_wait_mosquitto_daemon() {
+    local deadline=$(($(date +%s) + ${1:-5}))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if pgrep -f "mosquitto.*mqtt/config/mosquitto.conf" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
 # Function to stop existing processes
 stop_existing_processes() {
     print_header "Stopping Existing Processes"
@@ -134,11 +159,11 @@ stop_existing_processes() {
     for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
             lsof -ti :$port | xargs kill -9 2>/dev/null || true
-            sleep 1
         fi
+    done
+    for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
             sudo lsof -ti :$port | xargs sudo kill -9 2>/dev/null || true
-            sleep 1
         fi
     done
     pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
@@ -151,10 +176,9 @@ stop_existing_processes() {
     for port in $ESP32_PORT $NEMO_PORT; do
         if lsof -ti :$port >/dev/null 2>&1; then
             sudo lsof -ti :$port | xargs sudo kill -9 2>/dev/null || true
-            sleep 1
         fi
     done
-    sleep 2
+    _wait_mqtt_ports_free "$ESP32_PORT" "$NEMO_PORT" 5 || true
 
     # Stop NEMO server processes
     if pgrep -f "python.*main\.py" >/dev/null 2>&1; then
@@ -167,8 +191,6 @@ stop_existing_processes() {
         print_info "Stopping existing MQTT monitor processes..."
         pkill -f "python.*mqtt_monitor\.py" 2>/dev/null || true
     fi
-    
-    sleep 1
     
     # Verify ports are free
     ports_free=true
@@ -560,29 +582,8 @@ EOF
 start_services() {
     print_header "Starting Services"
     
-    # Start MQTT broker
+    # Start MQTT broker (caller should have run stop_existing_processes already)
     print_info "Starting MQTT broker..."
-    
-    # Ensure MQTT ports are free (kill by port with sudo fallback)
-    ESP32_PORT=$(_get_esp32_port)
-    NEMO_PORT=$(_get_nemo_port)
-    for port in $ESP32_PORT $NEMO_PORT; do
-        if lsof -ti :$port >/dev/null 2>&1; then
-            print_info "Clearing port $port before starting broker..."
-            lsof -ti :$port | xargs kill -9 2>/dev/null || true
-            sleep 1
-        fi
-        if lsof -ti :$port >/dev/null 2>&1; then
-            sudo lsof -ti :$port | xargs sudo kill -9 2>/dev/null || true
-            sleep 1
-        fi
-    done
-    pkill -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
-    pkill -9 mosquitto 2>/dev/null || true
-    if systemctl is-active --quiet mosquitto 2>/dev/null; then
-        sudo systemctl stop mosquitto 2>/dev/null || true
-    fi
-    sleep 2
     
     # Verify config file exists
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -597,7 +598,7 @@ start_services() {
     MOSQUITTO_ERROR=$(run_mosquitto mosquitto -c "$CONFIG_FILE" -d 2>&1)
     MOSQUITTO_EXIT=$?
     
-    sleep 3
+    _wait_mosquitto_daemon 6
     
     # Verify MQTT broker is running
     if pgrep -f "mosquitto.*mqtt/config/mosquitto.conf" >/dev/null; then
@@ -630,7 +631,10 @@ start_services() {
     source venv/bin/activate
     python3 main.py &
     NEMO_PID=$!
-    sleep 3
+    for _ in $(seq 1 30); do
+        kill -0 $NEMO_PID 2>/dev/null && break
+        sleep 0.2
+    done
     
     # Verify NEMO server is running
     if kill -0 $NEMO_PID 2>/dev/null; then
@@ -645,7 +649,10 @@ start_services() {
     : > "$MQTT_MONITOR_LOG"
     PYTHONUNBUFFERED=1 nohup python3 mqtt_monitor.py >> "$MQTT_MONITOR_LOG" 2>&1 &
     MQTT_MON_PID=$!
-    sleep 2
+    for _ in $(seq 1 15); do
+        kill -0 $MQTT_MON_PID 2>/dev/null && break
+        sleep 0.2
+    done
     
     if kill -0 $MQTT_MON_PID 2>/dev/null; then
         print_success "MQTT monitor started successfully (PID: $MQTT_MON_PID)"
@@ -802,9 +809,6 @@ main() {
     write_config_env
     setup_broker_auth
     
-    # Stop existing processes (clears only the configured ports)
-    stop_existing_processes
-    
     # Setup Python environment
     setup_python_environment
     
@@ -832,10 +836,10 @@ main() {
         echo "    then: tail -f mqtt/log/mqtt_monitor.log"
         echo ""
         print_warning "Services were not started. Configuration is ready."
+        stop_existing_processes
         return 0
     fi
     
-    # Stop any processes that might have started during setup
     print_info "Ensuring ports are free before starting services..."
     stop_existing_processes
     
