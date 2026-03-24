@@ -8,6 +8,29 @@ import re
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+_CONFIG_ENV_LOADED: bool = False
+
+
+def load_config_env() -> None:
+    """Load vm_server/config.env once (same directory as this module). Idempotent."""
+    global _CONFIG_ENV_LOADED
+    if _CONFIG_ENV_LOADED:
+        return
+    env_path = Path(__file__).resolve().parent / "config.env"
+    if env_path.is_file():
+        if os.access(env_path, os.R_OK):
+            try:
+                load_dotenv(env_path)
+            except PermissionError:
+                load_dotenv()
+        else:
+            load_dotenv()
+    else:
+        load_dotenv()
+    _CONFIG_ENV_LOADED = True
+
 class ConfigParser:
     """Parse configuration from Display-Code/src/config.h file"""
     
@@ -106,8 +129,11 @@ def get_nemo_port():
     return config.get('MQTT_PORT_NEMO', 1886)
 
 def get_mqtt_broker():
-    """Get MQTT broker address"""
-    return config.get('MQTT_BROKER', 'localhost')
+    """Get MQTT broker host (MQTT_BROKER in config.env overrides config.h default)."""
+    val = os.getenv("MQTT_BROKER")
+    if val is not None and str(val).strip() != "":
+        return str(val).strip().strip('"').strip("'")
+    return config.get("MQTT_BROKER", "localhost")
 
 if __name__ == "__main__":
     # Test the parser

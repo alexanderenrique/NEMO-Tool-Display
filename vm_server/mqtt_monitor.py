@@ -12,28 +12,45 @@ import os
 import signal
 from datetime import datetime
 from collections import defaultdict
+from pathlib import Path
+from typing import Optional
+
 from dotenv import load_dotenv
 
+# Set by load_environment(): absolute path to config.env if it was read successfully
+LOADED_CONFIG_ENV_PATH: Optional[str] = None
+
+
 def load_environment():
-    """Load configuration from config.env without hard-failing on permissions."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    env_path = os.path.join(script_dir, "config.env")
+    """Load vm_server/config.env (next to this script). Falls back to cwd .env via load_dotenv()."""
+    global LOADED_CONFIG_ENV_PATH
+    script_dir = Path(__file__).resolve().parent
+    env_path = script_dir / "config.env"
 
-    if not os.path.exists(env_path):
-        load_dotenv()
+    if env_path.is_file():
+        if not os.access(env_path, os.R_OK):
+            print(
+                f"⚠️  Cannot read env file: {env_path}. "
+                "Trying .env in current working directory; else using process environment only."
+            )
+            load_dotenv()
+            return
+        try:
+            load_dotenv(env_path)
+            LOADED_CONFIG_ENV_PATH = str(env_path)
+        except PermissionError:
+            print(
+                f"⚠️  Permission denied reading env file: {env_path}. "
+                "Trying .env in current working directory; else using process environment only."
+            )
+            load_dotenv()
         return
 
-    if not os.access(env_path, os.R_OK):
-        print(f"⚠️  Cannot read env file: {env_path}. Using existing environment variables.")
-        return
-
-    try:
-        load_dotenv(env_path)
-    except PermissionError:
-        print(f"⚠️  Permission denied reading env file: {env_path}. Using existing environment variables.")
+    print(f"⚠️  config.env not found at {env_path}. Trying .env in current working directory.")
+    load_dotenv()
 
 
-# Load configuration from config.env
+# Load configuration from config.env (or fallback .env / existing environment)
 load_environment()
 
 class ComprehensiveMQTTMonitor:
@@ -232,7 +249,13 @@ class ComprehensiveMQTTMonitor:
         self.print_status_header()
         
         # Display configuration
-        print("📋 Configuration loaded from config.env:")
+        if LOADED_CONFIG_ENV_PATH:
+            print(f"📋 Configuration loaded from: {LOADED_CONFIG_ENV_PATH}")
+        else:
+            print(
+                "📋 Configuration: config.env was not loaded from disk "
+                "(using process environment and/or .env in CWD if present)"
+            )
         print(f"   MQTT_BROKER: {self.mqtt_broker}")
         print(f"   MQTT_PORT_ESP32: {self.mqtt_port_esp32}, MQTT_PORT (NEMO): {self.mqtt_port}")
         print(f"   MQTT_USERNAME: {self.mqtt_username or '(not set)'}")

@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MQTT_CONFIG_DIR="$SCRIPT_DIR/mqtt/config"
 MQTT_DATA_DIR="$SCRIPT_DIR/mqtt/data"
 MQTT_LOG_DIR="$SCRIPT_DIR/mqtt/log"
+MQTT_MONITOR_LOG="$MQTT_LOG_DIR/mqtt_monitor.log"
 CONFIG_FILE="$MQTT_CONFIG_DIR/mosquitto.conf"
 
 # Load configuration from config.env
@@ -134,6 +135,7 @@ close_mqtt_ports_and_kill_connections() {
     pkill -9 -f "mosquitto.*mqtt/config/mosquitto.conf" 2>/dev/null || true
     pkill -9 mosquitto 2>/dev/null || true
     pkill -f "python.*main\.py" 2>/dev/null || true
+    pkill -f "python.*mqtt_monitor\.py" 2>/dev/null || true
     pkill -f "python.*manage\.py" 2>/dev/null || true
     pkill -f "python.*nemo" 2>/dev/null || true
     pkill -f "mosquitto_sub" 2>/dev/null || true
@@ -236,7 +238,24 @@ start_services() {
     python3 main.py &
     sleep 3
 
+    print_info "Starting MQTT monitor (logging to mqtt/log/mqtt_monitor.log)..."
+    : > "$MQTT_MONITOR_LOG"
+    PYTHONUNBUFFERED=1 nohup python3 mqtt_monitor.py >> "$MQTT_MONITOR_LOG" 2>&1 &
+    sleep 2
+
     print_success "Services started"
+}
+
+# Stream MQTT monitor log; Ctrl+C stops only this view (monitor keeps running).
+follow_mqtt_monitor_log() {
+    print_header "MQTT monitor (live log)"
+    print_info "Monitor runs in the background. Press Ctrl+C to stop viewing; the monitor keeps running."
+    echo ""
+    print_info "Log file: $MQTT_MONITOR_LOG"
+    echo ""
+    tail -f "$MQTT_MONITOR_LOG" || true
+    echo ""
+    print_info "Stopped following log. Monitor is still running (same log: $MQTT_MONITOR_LOG)."
 }
 
 # Function to show status
@@ -254,6 +273,12 @@ show_status() {
         print_success "NEMO server: Running"
     else
         print_error "NEMO server: Not running"
+    fi
+    
+    if pgrep -f "python.*mqtt_monitor\.py" >/dev/null; then
+        print_success "MQTT monitor: Running"
+    else
+        print_error "MQTT monitor: Not running"
     fi
     
     # Check ports
@@ -292,8 +317,8 @@ main() {
 
     show_status
     print_success "Quick restart completed!"
-    print_info "Monitor: python3 mqtt_monitor.py"
-    print_info "Test: python3 test_system.py"
+    print_info "Test: python3 test_system.py  (add --forward to verify NEMO→ESP32 forwarding)"
+    follow_mqtt_monitor_log
 }
 
 # Run main function

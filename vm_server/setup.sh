@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MQTT_CONFIG_DIR="$SCRIPT_DIR/mqtt/config"
 MQTT_DATA_DIR="$SCRIPT_DIR/mqtt/data"
 MQTT_LOG_DIR="$SCRIPT_DIR/mqtt/log"
+MQTT_MONITOR_LOG="$MQTT_LOG_DIR/mqtt_monitor.log"
 CONFIG_FILE="$MQTT_CONFIG_DIR/mosquitto.conf"
 
 # Function to print colored output
@@ -159,6 +160,12 @@ stop_existing_processes() {
     if pgrep -f "python.*main\.py" >/dev/null 2>&1; then
         print_info "Stopping existing NEMO server processes..."
         pkill -f "python.*main\.py" 2>/dev/null || true
+    fi
+    
+    # Stop MQTT monitor (if running)
+    if pgrep -f "python.*mqtt_monitor\.py" >/dev/null 2>&1; then
+        print_info "Stopping existing MQTT monitor processes..."
+        pkill -f "python.*mqtt_monitor\.py" 2>/dev/null || true
     fi
     
     sleep 1
@@ -603,6 +610,31 @@ start_services() {
         print_error "Failed to start NEMO server"
         return 1
     fi
+    
+    # Start MQTT monitor in background; logs go to MQTT_MONITOR_LOG (foreground tail follows it below)
+    print_info "Starting MQTT monitor (logging to mqtt/log/mqtt_monitor.log)..."
+    : > "$MQTT_MONITOR_LOG"
+    PYTHONUNBUFFERED=1 nohup python3 mqtt_monitor.py >> "$MQTT_MONITOR_LOG" 2>&1 &
+    MQTT_MON_PID=$!
+    sleep 2
+    
+    if kill -0 $MQTT_MON_PID 2>/dev/null; then
+        print_success "MQTT monitor started successfully (PID: $MQTT_MON_PID)"
+    else
+        print_warning "MQTT monitor may have exited immediately; check $MQTT_MONITOR_LOG or run: python3 mqtt_monitor.py"
+    fi
+}
+
+# Stream MQTT monitor log in foreground; Ctrl+C stops only this view (monitor keeps running).
+follow_mqtt_monitor_log() {
+    print_header "MQTT monitor (live log)"
+    print_info "Monitor runs in the background. Press Ctrl+C to stop viewing; the monitor keeps running."
+    echo ""
+    print_info "Log file: $MQTT_MONITOR_LOG"
+    echo ""
+    tail -f "$MQTT_MONITOR_LOG" || true
+    echo ""
+    print_info "Stopped following log. Monitor is still running (same log: $MQTT_MONITOR_LOG)."
 }
 
 # Function to show status
@@ -623,6 +655,13 @@ show_status() {
         print_error "NEMO server: Not running"
     fi
     
+    # Check MQTT monitor
+    if pgrep -f "python.*mqtt_monitor\.py" >/dev/null; then
+        print_success "MQTT monitor: Running"
+    else
+        print_error "MQTT monitor: Not running"
+    fi
+    
     # Check ports (from config.env)
     ESP32_PORT=$(_get_esp32_port)
     NEMO_PORT=$(_get_nemo_port)
@@ -637,7 +676,7 @@ show_status() {
     echo ""
     print_info "Quick commands:"
     echo "  - Restart: ./quick_restart.sh"
-    echo "  - Monitor: python3 mqtt_monitor.py"
+    echo "  - Monitor log: tail -f mqtt/log/mqtt_monitor.log"
     echo "  - Logs: tail -f nemo_server.log"
 }
 
@@ -719,7 +758,7 @@ main() {
     echo "  - Install Mosquitto MQTT broker"
     echo "  - Set up Python environment"
     echo "  - Generate HMAC key; optionally set broker username/password"
-    echo "  - Start all services"
+    echo "  - Start MQTT broker, NEMO server, and MQTT monitor"
     echo ""
     
     # Change to script directory
@@ -749,17 +788,19 @@ main() {
     # Ask user if ready to launch services
     echo ""
     print_header "Ready to Launch Services?"
-    echo "Before starting the MQTT broker and NEMO server, make sure you have:"
+    echo "Before starting the MQTT broker, NEMO server, and MQTT monitor, make sure you have:"
     echo "  ✓ Copied the VM IP address (shown above)"
     echo "  ✓ Noted MQTT_HMAC_KEY in config.env if you need it for NEMO"
     echo ""
-    read -p "Ready to launch MQTT broker and NEMO server? (Y/n): " -n 1 -r
+    read -p "Ready to launch MQTT broker, NEMO server, and MQTT monitor? (Y/n): " -n 1 -r
     echo ""
     
     if [[ $REPLY =~ ^[Nn]$ ]]; then
         print_info "Setup paused. Run the script again when ready, or start services manually:"
         echo "  - MQTT broker: mosquitto -c mqtt/config/mosquitto.conf -d"
         echo "  - NEMO server: source venv/bin/activate && python3 main.py"
+        echo "  - MQTT monitor: source venv/bin/activate && PYTHONUNBUFFERED=1 python3 mqtt_monitor.py >> mqtt/log/mqtt_monitor.log 2>&1 &"
+        echo "    then: tail -f mqtt/log/mqtt_monitor.log"
         echo ""
         print_warning "Services were not started. Configuration is ready."
         return 0
@@ -776,6 +817,7 @@ main() {
     show_status
     
     print_success "NEMO Tool Display setup completed successfully!"
+    follow_mqtt_monitor_log
 }
 
 # Run main function

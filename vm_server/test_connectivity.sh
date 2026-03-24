@@ -1,9 +1,13 @@
 #!/bin/bash
 
-# Test connectivity to VM MQTT broker
+# Test connectivity to VM MQTT broker (TCP + optional mosquitto_pub).
 # Usage: ./test_connectivity.sh [VM_IP] [PORT]
+# With no args, reads MQTT_BROKER and MQTT_PORT from vm_server/config.env next to this script.
 
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_ENV="${SCRIPT_DIR}/config.env"
 
 # Colors for output
 RED='\033[0;31m'
@@ -11,30 +15,58 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+_get_kv() {
+    local key="$1"
+    local file="$2"
+    [ -f "$file" ] || return 1
+    grep -E "^${key}=" "$file" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '"' | tr -d "'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# Optional MQTT auth from config (for brokers with allow_anonymous false)
+MQTT_USER=""
+MQTT_PASS=""
+if [ -f "$CONFIG_ENV" ]; then
+    MQTT_USER="$(_get_kv MQTT_USERNAME "$CONFIG_ENV" || true)"
+    MQTT_PASS="$(_get_kv MQTT_PASSWORD "$CONFIG_ENV" || true)"
+fi
+
 # Get VM IP from config or use provided argument
 if [ -n "$1" ]; then
     VM_IP="$1"
 else
-    # Try to get from config.env
-    if [ -f "config.env" ]; then
-        VM_IP=$(grep -E "^MQTT_BROKER=" config.env 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" || echo "")
+    if [ -f "$CONFIG_ENV" ]; then
+        VM_IP="$(_get_kv MQTT_BROKER "$CONFIG_ENV" || true)"
     fi
-    
-    # If still empty, prompt user
+
     if [ -z "$VM_IP" ]; then
-        echo -e "${YELLOW}VM IP not found in config.env${NC}"
-        read -p "Enter VM IP address: " VM_IP
+        echo -e "${YELLOW}MQTT_BROKER not found in ${CONFIG_ENV}${NC}"
+        read -r -p "Enter broker host or VM IP address: " VM_IP
     fi
 fi
 
-# Get port from argument or use default NEMO port
-PORT="${2:-1886}"
+# Get port from argument or from config (NEMO port), default 1886
+if [ -n "$2" ]; then
+    PORT="$2"
+elif [ -f "$CONFIG_ENV" ]; then
+    PORT="$(_get_kv MQTT_PORT "$CONFIG_ENV" || true)"
+    PORT="${PORT:-1886}"
+else
+    PORT="1886"
+fi
+
+ESP32_PORT=""
+if [ -f "$CONFIG_ENV" ]; then
+    ESP32_PORT="$(_get_kv MQTT_PORT_ESP32 "$CONFIG_ENV" || true)"
+fi
 
 echo "=========================================="
 echo "MQTT Connectivity Test"
 echo "=========================================="
-echo "VM IP: $VM_IP"
-echo "Port: $PORT"
+echo "Broker host: $VM_IP"
+echo "NEMO port: $PORT"
+if [ -n "$ESP32_PORT" ] && [ "$ESP32_PORT" != "$PORT" ]; then
+    echo "ESP32 port (from config): $ESP32_PORT"
+fi
 echo ""
 
 # Test 1: Ping test
@@ -83,7 +115,11 @@ if command -v mosquitto_pub >/dev/null 2>&1; then
     else
         MQTT_CMD="mosquitto_pub"
     fi
-    if $MQTT_CMD -h "$VM_IP" -p "$PORT" -t "$TEST_TOPIC" -m "test" -q 0; then
+    MQTT_AUTH=()
+    if [ -n "$MQTT_USER" ]; then
+        MQTT_AUTH=(-u "$MQTT_USER" -P "$MQTT_PASS")
+    fi
+    if $MQTT_CMD -h "$VM_IP" -p "$PORT" "${MQTT_AUTH[@]}" -t "$TEST_TOPIC" -m "test" -q 0; then
         echo -e "${GREEN}✓ MQTT connection successful${NC}"
         MQTT_CONNECTED=true
     else
