@@ -22,8 +22,10 @@ Requires=nemo-mosquitto.service
 
 [Service]
 Type=simple
-User=CHANGE_ME
-Group=CHANGE_ME
+# If you see Result: exit-code status=217/USER, User=/Group= pointed at a non-existent account.
+# Fix: set both to a real local user (e.g. ubuntu) or omit User=/Group= entirely to run as root (dev only).
+# User=ubuntu
+# Group=ubuntu
 WorkingDirectory=CHANGE_ME_VM_SERVER_DIR
 Environment=PYTHONUNBUFFERED=1
 ExecStart=CHANGE_ME_VM_SERVER_DIR/venv/bin/python3 CHANGE_ME_VM_SERVER_DIR/main.py
