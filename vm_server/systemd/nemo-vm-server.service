@@ -1,0 +1,37 @@
+# NEMO Tool Display — run main.py under systemd so it survives SSH disconnect and
+# restarts automatically after crashes.
+#
+# Install (Linux VM):
+#   1. Edit WorkingDirectory, ExecStart User, and paths below to match your deployment.
+#   2. sudo cp systemd/nemo-vm-server.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now nemo-vm-server.service
+#
+# Stop / start:
+#   sudo systemctl stop nemo-vm-server.service
+#   sudo systemctl start nemo-vm-server.service
+#
+# Logs: journalctl -u nemo-vm-server.service -f
+#       plus nemo_server.log under WorkingDirectory (from Python logging).
+
+[Unit]
+Description=NEMO Tool Display VM server (main.py)
+After=network-online.target nemo-mosquitto.service
+Wants=network-online.target
+Requires=nemo-mosquitto.service
+
+[Service]
+Type=simple
+User=CHANGE_ME
+Group=CHANGE_ME
+WorkingDirectory=CHANGE_ME_VM_SERVER_DIR
+Environment=PYTHONUNBUFFERED=1
+ExecStart=CHANGE_ME_VM_SERVER_DIR/venv/bin/python3 CHANGE_ME_VM_SERVER_DIR/main.py
+Restart=on-failure
+RestartSec=5
+
+# If you need the process up even when it exits with code 0 (discouraged — fix exit codes instead):
+# Restart=always
+
+[Install]
+WantedBy=multi-user.target

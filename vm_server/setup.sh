@@ -626,10 +626,10 @@ start_services() {
         return 1
     fi
     
-    # Start NEMO server
+    # Start NEMO server (nohup: survives SSH disconnect; logs also in nemo_server.log)
     print_info "Starting NEMO server..."
     source venv/bin/activate
-    python3 main.py &
+    PYTHONUNBUFFERED=1 nohup python3 main.py >> "$SCRIPT_DIR/nemo_boot.log" 2>&1 &
     NEMO_PID=$!
     for _ in $(seq 1 30); do
         kill -0 $NEMO_PID 2>/dev/null && break
@@ -831,7 +831,7 @@ main() {
     if [[ $REPLY =~ ^[Nn]$ ]]; then
         print_info "Setup paused. Run the script again when ready, or start services manually:"
         echo "  - MQTT broker: mosquitto -c mqtt/config/mosquitto.conf -d"
-        echo "  - NEMO server: source venv/bin/activate && python3 main.py"
+        echo "  - NEMO server: source venv/bin/activate && PYTHONUNBUFFERED=1 nohup python3 main.py >> nemo_boot.log 2>&1 &"
         echo "  - MQTT monitor: source venv/bin/activate && PYTHONUNBUFFERED=1 python3 mqtt_monitor.py >> mqtt/log/mqtt_monitor.log 2>&1 &"
         echo "    then: tail -f mqtt/log/mqtt_monitor.log"
         echo ""

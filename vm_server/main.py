@@ -835,27 +835,50 @@ class NEMOToolServer:
             logger.error(f"Error processing overall status: {e}")
     
     
-    async def start(self):
-        """Start the server"""
+    async def start(self) -> str:
+        """Start the server. Returns 'clean' on normal stop (SIGINT/SIGTERM or shutdown flag),
+        'error' if the run loop or MQTT init failed so a supervisor can restart the process."""
         logger.info("Starting NEMO Tool Display Server")
         try:
-            await self.init_mqtt()
-            
+            # Mosquitto may be slow after boot or restart; retry init instead of exiting once.
+            last_err: Optional[Exception] = None
+            for attempt in range(1, 8):
+                try:
+                    await self.init_mqtt()
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    logger.warning(
+                        "MQTT init failed (attempt %s/7): %s — retrying after backoff",
+                        attempt,
+                        e,
+                    )
+                    await self.cleanup()
+                    if attempt < 7:
+                        await asyncio.sleep(min(2 * attempt, 15))
+            if last_err is not None:
+                raise last_err
+
             self.running = True
             logger.info("Server ready — NEMO (1886) → ESP32 (1883)")
-            
+
             # Start connection status monitor
             asyncio.create_task(self.connection_status_monitor())
-            
+
             # Keep the server running
             while self.running:
                 await asyncio.sleep(1)
-                
+
+            return "clean"
+
         except KeyboardInterrupt:
             logger.info("Received shutdown signal")
+            return "clean"
         except Exception as e:
             logger.error(f"Server error: {e}")
             logger.exception("Full error details:")
+            return "error"
         finally:
             await self.cleanup()
     
@@ -895,27 +918,44 @@ async def main():
 
     # Display MQTT config for verification during debugging
     print_mqtt_config_for_debug()
-    
-    server = NEMOToolServer()
 
-    def _request_shutdown(*_args):
-        logger.info("Shutdown requested (Ctrl+C or SIGTERM)")
-        server.running = False
+    backoff_s = 5
+    max_backoff_s = 60
 
-    try:
-        signal.signal(signal.SIGINT, _request_shutdown)
-        signal.signal(signal.SIGTERM, _request_shutdown)
-    except ValueError:
-        # signal.signal can fail if not in main thread (e.g. some IDEs)
-        pass
+    while True:
+        server = NEMOToolServer()
 
-    try:
-        await server.start()
-    except Exception as e:
-        logger.error(f"Failed to start server: {e}")
-        logger.exception("Full error details:")
-        sys.exit(1)
+        def _request_shutdown(*_args):
+            logger.info("Shutdown requested (Ctrl+C or SIGTERM)")
+            server.running = False
+
+        try:
+            signal.signal(signal.SIGINT, _request_shutdown)
+            signal.signal(signal.SIGTERM, _request_shutdown)
+        except ValueError:
+            # signal.signal can fail if not in main thread (e.g. some IDEs)
+            pass
+
+        try:
+            outcome = await server.start()
+        except Exception as e:
+            logger.error(f"Failed to start server: {e}")
+            logger.exception("Full error details:")
+            outcome = "error"
+
+        if outcome == "clean":
+            break
+
+        logger.warning(
+            "Server stopped after error; retrying in %s s (Ctrl+C to abort)",
+            backoff_s,
+        )
+        await asyncio.sleep(backoff_s)
+        backoff_s = min(max_backoff_s, backoff_s * 2)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

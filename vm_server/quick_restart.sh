@@ -291,10 +291,10 @@ start_services() {
     fi
     print_success "MQTT broker listening on localhost:$esp32_port, localhost:$nemo_port"
 
-    # Start NEMO server (connects to localhost / MQTT_BROKER)
+    # Start NEMO server (nohup: survives SSH disconnect; logs also in nemo_server.log)
     print_info "Starting NEMO server..."
     source venv/bin/activate
-    python3 main.py &
+    PYTHONUNBUFFERED=1 nohup python3 main.py >> "$SCRIPT_DIR/nemo_boot.log" 2>&1 &
     sleep 3
 
     print_info "Starting MQTT monitor (logging to mqtt/log/mqtt_monitor.log)..."
