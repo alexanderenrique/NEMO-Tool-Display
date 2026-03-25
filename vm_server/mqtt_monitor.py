@@ -4,6 +4,7 @@ Comprehensive MQTT Monitor
 Combines broker status monitoring, message watching, and traffic analysis
 """
 
+import json
 import paho.mqtt.client as mqtt
 import subprocess
 import threading
@@ -13,9 +14,9 @@ import sys
 import os
 import signal
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
-from typing import Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -55,6 +56,14 @@ def load_environment():
 # Load configuration from config.env (or fallback .env / existing environment)
 load_environment()
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    if not v:
+        return default
+    return v in ("1", "true", "yes", "on")
+
+
 class ComprehensiveMQTTMonitor:
     """Subscribes to '#' on both listener ports (all non-$SYS traffic logged). $SYS ingested for periodic status."""
 
@@ -79,6 +88,20 @@ class ComprehensiveMQTTMonitor:
 
         self.port_stats = {str(self.mqtt_port_esp32): 0, str(self.mqtt_port): 0}
         self.start_time = datetime.now()
+
+        # Forward correlation: nemo/tools/... → expect nemo/esp32/<same tool>/... (main.py cannot be observed directly)
+        self.monitor_debug = _env_bool("MQTT_MONITOR_DEBUG", False)
+        self.correlate = _env_bool("MQTT_MONITOR_CORRELATE", True)
+        self.correlation_timeout_sec = float(os.getenv("MQTT_MONITOR_CORRELATION_TIMEOUT", "8"))
+        self._corr_lock = threading.Lock()
+        self._corr_next_id = 1
+        # tool_id -> FIFO of pending {id, t_mono, wall, topic, event}
+        self._pending_display: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
+        self._corr_matched = 0
+        self._corr_timeouts = 0
+        # Same broker publish is delivered to both listeners ~simultaneously — only one pending row
+        self._tools_pub_dedupe: Optional[Tuple[str, int, float]] = None
+        self._display_pub_dedupe: Optional[Tuple[str, int, float]] = None
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -182,6 +205,193 @@ class ComprehensiveMQTTMonitor:
             return "📊 server"
         return "📡 other"
 
+    def _tools_topic_meta(self, topic: str) -> Optional[Tuple[str, Optional[str]]]:
+        """Return (tool_id, event_or_none) for nemo/tools/...; None if not applicable."""
+        parts = topic.split("/")
+        if len(parts) < 3 or parts[0] != "nemo" or parts[1] != "tools":
+            return None
+        if parts[2] == "overall":
+            return ("overall", None)
+        tid = parts[2]
+        ev = parts[3] if len(parts) >= 4 else None
+        return (tid, ev)
+
+    def _esp32_topic_meta(self, topic: str) -> Optional[Tuple[str, str]]:
+        """Return (tool_id, suffix) for nemo/esp32/<id>/<suffix> or overall."""
+        if topic == "nemo/esp32/overall":
+            return ("overall", "overall")
+        parts = topic.split("/")
+        if len(parts) != 4 or parts[0] != "nemo" or parts[1] != "esp32":
+            return None
+        return (parts[2], parts[3])
+
+    def _is_duplicate_tools_fanout(self, topic: str, payload: bytes) -> bool:
+        """Second MQTT client callback for the same publish (other listener) → skip."""
+        now = time.monotonic()
+        h = hash(payload)
+        prev = self._tools_pub_dedupe
+        if prev is not None:
+            pt, ph, t0 = prev
+            if pt == topic and ph == h and (now - t0) < 0.12:
+                return True
+        self._tools_pub_dedupe = (topic, h, now)
+        return False
+
+    def _is_duplicate_display_fanout(self, topic: str, payload: bytes) -> bool:
+        """Avoid matching (popping) two pendings for one DISPLAY publish."""
+        now = time.monotonic()
+        h = hash(payload)
+        prev = self._display_pub_dedupe
+        if prev is not None:
+            pt, ph, t0 = prev
+            if pt == topic and ph == h and (now - t0) < 0.12:
+                return True
+        self._display_pub_dedupe = (topic, h, now)
+        return False
+
+    def _record_tools_pending_with_payload(self, topic: str, port: str, payload: bytes) -> None:
+        """Register expectation of DISPLAY after nemo/tools/... (once per publish; both listeners see same msg)."""
+        if not self.correlate:
+            return
+        meta = self._tools_topic_meta(topic)
+        if not meta:
+            return
+        tool_id, event = meta
+        if tool_id == "overall":
+            return
+        if self._is_duplicate_tools_fanout(topic, payload):
+            return
+        with self._corr_lock:
+            cid = self._corr_next_id
+            self._corr_next_id += 1
+            rec = {
+                "id": cid,
+                "t_mono": time.monotonic(),
+                "wall": datetime.now().strftime("%H:%M:%S.%f")[:-3],
+                "topic": topic,
+                "event": event or "(base topic)",
+            }
+            self._pending_display[tool_id].append(rec)
+        evs = event or "?"
+        print(
+            f"                    🔗 correlate #{cid}: awaiting DISPLAY for tool_id={tool_id} "
+            f"(after {topic}; event={evs}; timeout={self.correlation_timeout_sec:g}s; saw listener{port})",
+            flush=True,
+        )
+        print(
+            "                    🔗 expect: nemo/esp32/"
+            f"{tool_id}/status|operational|task (or related) from main.py",
+            flush=True,
+        )
+        if self.monitor_debug:
+            pv = payload[:160].decode("utf-8", errors="replace").replace("\n", " ")
+            print(f"                    🔎 correlate debug payload preview: {pv!r}", flush=True)
+
+    def _try_match_display(self, topic: str, payload: bytes) -> None:
+        """If this is nemo/esp32/..., consume oldest pending for that tool."""
+        if not self.correlate:
+            return
+        meta = self._esp32_topic_meta(topic)
+        if not meta:
+            return
+        if self._is_duplicate_display_fanout(topic, payload):
+            return
+        tool_id, suffix = meta
+        now = time.monotonic()
+        with self._corr_lock:
+            q = self._pending_display.get(tool_id)
+            if not q:
+                if self.monitor_debug:
+                    print(
+                        f"                    🔎 DISPLAY {topic} (no pending correlate for tool_id={tool_id})",
+                        flush=True,
+                    )
+                return
+            rec = q.popleft()
+            if not q:
+                del self._pending_display[tool_id]
+            dt_ms = (now - rec["t_mono"]) * 1000.0
+            self._corr_matched += 1
+            cid = rec["id"]
+        print(
+            f"                    🔗 correlate #{cid}: matched in {dt_ms:.0f}ms "
+            f"— {rec['topic']} → {topic} ({suffix})",
+            flush=True,
+        )
+
+    def _flush_correlation_timeouts(self) -> None:
+        """Log pending NEMO tools events that never got a DISPLAY line."""
+        if not self.correlate:
+            return
+        now = time.monotonic()
+        to_warn: List[Tuple[str, Dict[str, Any]]] = []
+        with self._corr_lock:
+            for tid, q in list(self._pending_display.items()):
+                while q and (now - q[0]["t_mono"]) >= self.correlation_timeout_sec:
+                    to_warn.append((tid, q.popleft()))
+                if not q:
+                    del self._pending_display[tid]
+        for tid, rec in to_warn:
+            self._corr_timeouts += 1
+            age = now - rec["t_mono"]
+            print(
+                f"\n{'!' * 3} CORRELATION TIMEOUT #{rec['id']} ({age:.1f}s): "
+                f"no nemo/esp32/{tid}/… after {rec['topic']}",
+                flush=True,
+            )
+            print(
+                "   main.py may not be running, MQTT_HMAC_KEY mismatch ([HMAC] Rejected in nemo log), "
+                "ESP32 MQTT client disconnected, or event not forwarded for this topic.",
+                flush=True,
+            )
+            print(f"   Started waiting at {rec['wall']} event={rec['event']}\n", flush=True)
+
+    def _payload_debug_lines(self, topic: str, payload: bytes, is_nemo_port: bool) -> List[str]:
+        """Structured payload sniff (no crypto): envelope shape, inner keys, sample fields."""
+        lines: List[str] = []
+        label = "NEMO listener" if is_nemo_port else "ESP32 listener"
+        s = payload.decode("utf-8", errors="replace")
+        if self.monitor_debug:
+            lines.append(f"                    🔎 debug ({label}): {len(payload)} bytes")
+        try:
+            o = json.loads(s)
+        except json.JSONDecodeError:
+            lines.append(f"                    🔎 payload: not JSON ({label})")
+            return lines
+        if not isinstance(o, dict):
+            lines.append(f"                    🔎 payload: JSON non-object ({label})")
+            return lines
+        if (
+            isinstance(o.get("payload"), str)
+            and isinstance(o.get("hmac"), str)
+            and isinstance(o.get("algo"), str)
+        ):
+            plen = len(o["payload"])
+            lines.append(
+                f"                    🔎 shape: HMAC envelope algo={o.get('algo')} inner_string_len={plen}"
+            )
+            if self.monitor_debug:
+                lines.append(f"                    🔎 hmac prefix: {o.get('hmac', '')[:16]}…")
+            try:
+                inner = json.loads(o["payload"])
+            except json.JSONDecodeError:
+                lines.append("                    🔎 inner: (string is not valid JSON)")
+                return lines
+            if isinstance(inner, dict):
+                keys = ", ".join(sorted(inner.keys())[:14])
+                lines.append(f"                    🔎 inner keys: {keys}")
+                for k in ("event", "tool_id", "tool_name", "user_name", "operational"):
+                    if k in inner:
+                        v = inner[k]
+                        vs = repr(v) if len(repr(v)) <= 120 else repr(v)[:117] + "…"
+                        lines.append(f"                    🔎 inner {k}: {vs}")
+            else:
+                lines.append(f"                    🔎 inner: JSON {type(inner).__name__}")
+        else:
+            keys = ", ".join(sorted(o.keys())[:16])
+            lines.append(f"                    🔎 shape: plain JSON keys: {keys}")
+        return lines
+
     def log_message(self, source, msg, port):
         """Log all subscribed traffic; $SYS updates metrics only."""
         if msg.topic.startswith("$SYS/"):
@@ -204,6 +414,30 @@ class ComprehensiveMQTTMonitor:
             f"[{timestamp}] [{source:>6}] {direction} {topic_color} {msg.topic}  (listener{listener})",
             flush=True,
         )
+
+        tm = self._tools_topic_meta(msg.topic)
+        if tm:
+            tid, ev = tm
+            print(
+                f"                    🔎 topic parse: nemo/tools tool_id={tid} event_suffix={ev or '—'}",
+                flush=True,
+            )
+        em = self._esp32_topic_meta(msg.topic)
+        if em:
+            tid, suf = em
+            print(
+                f"                    🔎 topic parse: nemo/esp32 tool_id={tid} path_suffix={suf}",
+                flush=True,
+            )
+
+        if msg.topic.startswith("nemo/esp32/") or msg.topic == "nemo/esp32/overall":
+            self._try_match_display(msg.topic, msg.payload)
+        if msg.topic.startswith("nemo/tools/"):
+            self._record_tools_pending_with_payload(msg.topic, port, msg.payload)
+
+        for ln in self._payload_debug_lines(msg.topic, msg.payload, is_nemo_port=is_nemo_port):
+            print(ln, flush=True)
+
         print(
             f"                    📊 QoS:{msg.qos} | Retain:{msg.retain} | Size:{len(msg.payload)} bytes",
             flush=True,
@@ -268,6 +502,13 @@ class ComprehensiveMQTTMonitor:
             "  Forward: main.py republishes to nemo/esp32/<id>/status|operational|task. "
             "If you see nemo/tools/… but never nemo/esp32/…, the server did not forward — check main.py / nemo logs "
             "(e.g. MQTT_HMAC_KEY mismatch → [HMAC] Rejected).",
+            flush=True,
+        )
+        with self._corr_lock:
+            pending_now = sum(len(q) for q in self._pending_display.values())
+        print(
+            f"  Correlation: matched={self._corr_matched} timeouts={self._corr_timeouts} "
+            f"pending_now={pending_now} (timeout={self.correlation_timeout_sec:g}s)",
             flush=True,
         )
         print(f"{'=' * 80}\n", flush=True)
@@ -371,6 +612,11 @@ class ComprehensiveMQTTMonitor:
         print(f"   MQTT_PORT_ESP32: {self.mqtt_port_esp32}, MQTT_PORT (NEMO): {self.mqtt_port}")
         print(f"   MQTT_USERNAME: {self.mqtt_username or '(not set)'}")
         print(f"   MQTT_PASSWORD set: {'yes' if self.mqtt_password else 'no'}")
+        print(
+            f"   MQTT_MONITOR_DEBUG={'on' if self.monitor_debug else 'off'} | "
+            f"MQTT_MONITOR_CORRELATE={'on' if self.correlate else 'off'} | "
+            f"MQTT_MONITOR_CORRELATION_TIMEOUT={self.correlation_timeout_sec:g}"
+        )
         print("")
         
         print("🔌 Connecting to MQTT brokers...")
@@ -422,14 +668,22 @@ class ComprehensiveMQTTMonitor:
                 "   This process only logs messages the broker delivers to subscribers (not a publish tap). "
                 "NEMO publishes nemo/tools/…; main.py should follow with nemo/esp32/… (shown as DISPLAY)."
             )
+            print(
+                "   🔗 Lines prefixed with correlate track tools→DISPLAY pairs; "
+                "timeouts mean no matching nemo/esp32/… arrived (see main.py / HMAC)."
+            )
             print("=" * 80)
 
             time.sleep(1.5)  # allow $SYS messages after subscribe
             self.print_periodic_connection_status()
 
             last_status = time.monotonic()
+            last_corr_check = time.monotonic()
             while self.running:
                 time.sleep(0.2)
+                if time.monotonic() - last_corr_check >= 1.0:
+                    self._flush_correlation_timeouts()
+                    last_corr_check = time.monotonic()
                 if time.monotonic() - last_status >= self.STATUS_INTERVAL_SEC:
                     self.print_periodic_connection_status()
                     last_status = time.monotonic()
@@ -460,7 +714,14 @@ class ComprehensiveMQTTMonitor:
             sorted_topics = sorted(self.topic_stats.items(), key=lambda x: x[1], reverse=True)
             for topic, count in sorted_topics[:5]:
                 print(f"  {topic}: {count} messages")
-        
+
+        with self._corr_lock:
+            pend = sum(len(q) for q in self._pending_display.values())
+        print(
+            f"\nCorrelation summary: matched={self._corr_matched} timeouts={self._corr_timeouts} "
+            f"still_pending={pend}"
+        )
+
         print("=" * 80)
 
 def main():
