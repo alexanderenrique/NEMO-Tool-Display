@@ -458,7 +458,10 @@ class NEMOToolServer:
 
         expected = hmac_lib.new(key_bytes, message_bytes, digestmod=algo).hexdigest()
         if not hmac_lib.compare_digest(expected, msg_hmac_hex.strip().lower()):
-            logger.warning(f"[HMAC] Rejected (bad signature) topic={topic}")
+            logger.warning(
+                f"[HMAC] Rejected (bad signature) topic={topic} — "
+                "check MQTT_HMAC_KEY matches NEMO; no nemo/esp32/… forward will run for this message."
+            )
             # Debug: log what we hashed so it can be compared with NEMO's signer (e.g. payload serialization or topic inclusion)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(

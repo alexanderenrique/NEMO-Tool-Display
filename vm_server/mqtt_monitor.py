@@ -172,6 +172,16 @@ class ComprehensiveMQTTMonitor:
             lines.append(f"                    │ hex: {payload.hex()}")
         return lines
 
+    def _traffic_label(self, topic: str) -> str:
+        """Classify by topic. Both listeners hit the same broker — one publish often appears twice."""
+        if topic.startswith("nemo/esp32/") or topic == "nemo/esp32/overall":
+            return "📤 DISPLAY (nemo/esp32/…)"
+        if topic.startswith("nemo/tools/"):
+            return "📥 NEMO tools (nemo/tools/…)"
+        if topic.startswith("nemo/server/"):
+            return "📊 server"
+        return "📡 other"
+
     def log_message(self, source, msg, port):
         """Log all subscribed traffic; $SYS updates metrics only."""
         if msg.topic.startswith("$SYS/"):
@@ -185,17 +195,15 @@ class ComprehensiveMQTTMonitor:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         is_nemo_port = port == str(self.mqtt_port)
 
-        if port == str(self.mqtt_port_esp32):
-            if "esp32" in msg.topic.lower():
-                direction = "📤 TO ESP32"
-            else:
-                direction = "📥 FROM ESP32"
-        else:
-            direction = "📥 ON NEMO PORT"
+        direction = self._traffic_label(msg.topic)
+        listener = f":{port}"
 
         topic_color = self.get_topic_color(msg.topic)
 
-        print(f"[{timestamp}] [{source:>6}] {direction} {topic_color} {msg.topic}", flush=True)
+        print(
+            f"[{timestamp}] [{source:>6}] {direction} {topic_color} {msg.topic}  (listener{listener})",
+            flush=True,
+        )
         print(
             f"                    📊 QoS:{msg.qos} | Retain:{msg.retain} | Size:{len(msg.payload)} bytes",
             flush=True,
@@ -254,6 +262,12 @@ class ComprehensiveMQTTMonitor:
         )
         print(
             "  Note: counts include this monitor (2 MQTT) + main.py + any backends/displays.",
+            flush=True,
+        )
+        print(
+            "  Forward: main.py republishes to nemo/esp32/<id>/status|operational|task. "
+            "If you see nemo/tools/… but never nemo/esp32/…, the server did not forward — check main.py / nemo logs "
+            "(e.g. MQTT_HMAC_KEY mismatch → [HMAC] Rejected).",
             flush=True,
         )
         print(f"{'=' * 80}\n", flush=True)
@@ -399,9 +413,15 @@ class ComprehensiveMQTTMonitor:
             thread_1884.daemon = True
             thread_1884.start()
             
-            print(f"\n✅ Monitoring ports:")
-            print(f"   📥 Port {self.mqtt_port} - All topics (#) + $SYS/# (NEMO listener)")
-            print(f"   📤 Port {self.mqtt_port_esp32} - All topics (#) + $SYS/# (ESP32 listener)")
+            print(f"\n✅ Monitoring ports (same broker, two listeners — duplicates are normal):")
+            print(
+                f"   Port {self.mqtt_port} (NEMO TCP) + port {self.mqtt_port_esp32} (ESP32 TCP): "
+                "subscribe # + $SYS/# on each."
+            )
+            print(
+                "   This process only logs messages the broker delivers to subscribers (not a publish tap). "
+                "NEMO publishes nemo/tools/…; main.py should follow with nemo/esp32/… (shown as DISPLAY)."
+            )
             print("=" * 80)
 
             time.sleep(1.5)  # allow $SYS messages after subscribe
