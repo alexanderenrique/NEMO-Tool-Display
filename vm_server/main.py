@@ -8,6 +8,7 @@ Main application that receives tool status via MQTT and distributes to ESP32 dis
 import asyncio
 import hashlib
 import hmac as hmac_lib
+import itertools
 import json
 import logging
 import os
@@ -153,6 +154,7 @@ class NEMOToolServer:
         self.mqtt_client_nemo = None  # Client for receiving from NEMO on port 1886
         self.mqtt_client_esp32 = None  # Client for publishing to ESP32s on port 1883
         self.running = False
+        self._rx_counter = itertools.count(1)  # Monotonic trace id for inbound message flow
 
     async def init_mqtt(self):
         """Initialize MQTT clients: one for receiving from NEMO (1886), one for publishing to ESP32s (1883)"""
@@ -283,30 +285,31 @@ class NEMOToolServer:
         trace_mqtt(f"[esp32] on_publish broker ack mid={mid}")
         logger.debug(f"Message published with mid: {mid}")
     
-    def _publish_to_esp32(self, topic: str, payload_json: str, context: str):
+    def _publish_to_esp32(self, topic: str, payload_json: str, context: str, trace_id: Optional[str] = None):
         """Publish via ESP32 MQTT client with consistent logging."""
         c = self.mqtt_client_esp32
+        trace_prefix = f"[{trace_id}] " if trace_id else ""
         trace_mqtt(
-            f"[esp32] publish_attempt ctx={context} topic={topic} "
+            f"{trace_prefix}[esp32] publish_attempt ctx={context} topic={topic} "
             f"client={'set' if c else 'MISSING'} "
             f"connected={c.is_connected() if c else False} "
             f"payload_bytes={len(payload_json.encode('utf-8'))}"
         )
         if not c:
-            logger.error(f"[esp32] publish ABORT ctx={context}: mqtt_client_esp32 is None")
+            logger.error(f"{trace_prefix}[esp32] publish ABORT ctx={context}: mqtt_client_esp32 is None")
             return None
         if not c.is_connected():
             logger.error(
-                f"[esp32] publish ABORT ctx={context}: client not connected "
+                f"{trace_prefix}[esp32] publish ABORT ctx={context}: client not connected "
                 f"(state={getattr(c, '_state', '?')})"
             )
         try:
             result = c.publish(topic, payload_json, qos=1, retain=True)
         except Exception as e:
-            logger.exception(f"[esp32] publish EXCEPTION ctx={context} topic={topic}: {e}")
+            logger.exception(f"{trace_prefix}[esp32] publish EXCEPTION ctx={context} topic={topic}: {e}")
             return None
         trace_mqtt(
-            f"[esp32] publish_return ctx={context} topic={topic} rc={result.rc} "
+            f"{trace_prefix}[esp32] publish_return ctx={context} topic={topic} rc={result.rc} "
             f"mid={getattr(result, 'mid', None)} rc_name={self.get_mqtt_error_description(result.rc)}"
         )
         return result
@@ -464,31 +467,37 @@ class NEMOToolServer:
             i += 1
         return None
 
-    def _unwrap_and_verify_hmac(self, raw_payload: str, topic: str) -> Tuple[bool, Optional[dict]]:
+    def _unwrap_and_verify_hmac(
+        self,
+        raw_payload: str,
+        topic: str,
+        trace_id: Optional[str] = None,
+    ) -> Tuple[bool, Optional[dict]]:
         """Verify NEMO envelope: {"payload": "<signed string>", "hmac": "<hex>", "algo": "sha256"}.
         HMAC is computed over the payload string as decoded from the envelope (same value NEMO signs).
         Returns (True, parsed_payload) or (False, None).
         """
+        trace_prefix = f"[{trace_id}] " if trace_id else ""
         try:
             data = json.loads(raw_payload)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            logger.warning(f"[HMAC] Rejected (invalid JSON) topic={topic}")
+            logger.warning(f"{trace_prefix}[HMAC] Rejected (invalid JSON) topic={topic}")
             return False, None
 
         if not isinstance(data, dict) or "payload" not in data or "hmac" not in data:
-            logger.warning(f"[HMAC] Rejected (missing payload/hmac) topic={topic}")
+            logger.warning(f"{trace_prefix}[HMAC] Rejected (missing payload/hmac) topic={topic}")
             return False, None
 
         msg_hmac_hex = data.get("hmac")
         algo = (data.get("algo") or "sha256").strip().lower()
 
         if not isinstance(msg_hmac_hex, str) or not msg_hmac_hex:
-            logger.warning(f"[HMAC] Rejected (empty hmac) topic={topic}")
+            logger.warning(f"{trace_prefix}[HMAC] Rejected (empty hmac) topic={topic}")
             return False, None
 
         payload_str = data.get("payload")
         if not isinstance(payload_str, str):
-            logger.warning(f"[HMAC] Rejected (payload must be string) topic={topic}")
+            logger.warning(f"{trace_prefix}[HMAC] Rejected (payload must be string) topic={topic}")
             return False, None
 
         # Key = shared secret as UTF-8 (exact value from config)
@@ -498,17 +507,17 @@ class NEMOToolServer:
 
         # digestmod must be a name or constructor, not an instance
         if algo not in hashlib.algorithms_available:
-            logger.warning(f"[HMAC] Rejected (unsupported algo={algo}) topic={topic}")
+            logger.warning(f"{trace_prefix}[HMAC] Rejected (unsupported algo={algo}) topic={topic}")
             return False, None
 
         expected = hmac_lib.new(key_bytes, message_bytes, digestmod=algo).hexdigest()
         if not hmac_lib.compare_digest(expected, msg_hmac_hex.strip().lower()):
             logger.warning(
-                f"[HMAC] Rejected (bad signature) topic={topic} — "
+                f"{trace_prefix}[HMAC] Rejected (bad signature) topic={topic} — "
                 "check MQTT_HMAC_KEY matches NEMO; no nemo/esp32/… forward will run for this message."
             )
             trace_mqtt(
-                f"[HMAC] trace bad_sig topic={topic} expected_prefix={expected[:16]}… "
+                f"{trace_prefix}[HMAC] trace bad_sig topic={topic} expected_prefix={expected[:16]}… "
                 f"got_prefix={msg_hmac_hex.strip().lower()[:16]}… payload_len={len(payload_str)} "
                 f"key_len_bytes={len(key_bytes)}"
             )
@@ -529,7 +538,7 @@ class NEMOToolServer:
         inner_ev = payload.get("event") if isinstance(payload, dict) else None
         inner_tid = payload.get("tool_id") if isinstance(payload, dict) else None
         trace_mqtt(
-            f"[HMAC] OK topic={topic} inner_event={inner_ev!r} inner_tool_id={inner_tid!r} "
+            f"{trace_prefix}[HMAC] OK topic={topic} inner_event={inner_ev!r} inner_tool_id={inner_tid!r} "
             f"payload_keys={list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__}"
         )
         return True, payload
@@ -561,10 +570,11 @@ class NEMOToolServer:
         raw_payload = msg.payload.decode(errors="replace")
         topic_parts = topic.split("/")
         inferred_event_type = topic_parts[3] if len(topic_parts) >= 4 else None
+        trace_id = f"rx#{next(self._rx_counter)}"
 
         hmac_key = (self.config.get("mqtt_hmac_key") or "").strip()
         trace_mqtt(
-            f"[mqtt] rx topic={topic} qos={msg.qos} retain={msg.retain} "
+            f"[{trace_id}] [mqtt] rx topic={topic} qos={msg.qos} retain={msg.retain} "
             f"bytes={len(msg.payload)} hmac_key_configured={bool(hmac_key)} "
             f"hmac_key_len={len(hmac_key)}"
         )
@@ -574,28 +584,29 @@ class NEMOToolServer:
             try:
                 data = json.loads(raw_payload)
             except (json.JSONDecodeError, UnicodeDecodeError):
-                logger.warning(f"[HMAC] Rejected (nemo/tools/... requires HMAC envelope; invalid JSON) topic={topic}")
+                logger.warning(f"[{trace_id}] [HMAC] Rejected (nemo/tools/... requires HMAC envelope; invalid JSON) topic={topic}")
                 return
             if not self._is_hmac_envelope(data):
                 logger.warning(
-                    f"[HMAC] Rejected (nemo/tools/... requires HMAC envelope: payload, hmac, algo) topic={topic}"
+                    f"[{trace_id}] [HMAC] Rejected (nemo/tools/... requires HMAC envelope: payload, hmac, algo) topic={topic}"
                 )
                 return
-            trace_mqtt(f"[mqtt] envelope shape OK for topic={topic}")
+            trace_mqtt(f"[{trace_id}] [mqtt] envelope shape OK for topic={topic}")
 
         # Single HMAC gate for all NEMO messages when key is set (enabled, disabled, start, end, overall).
         if hmac_key:
-            trace_mqtt(f"[mqtt] verifying HMAC for topic={topic}")
-            unwrapped, payload = self._unwrap_and_verify_hmac(raw_payload, topic)
+            trace_mqtt(f"[{trace_id}] [mqtt] verifying HMAC for topic={topic}")
+            unwrapped, payload = self._unwrap_and_verify_hmac(raw_payload, topic, trace_id=trace_id)
             if not unwrapped:
-                trace_mqtt(f"[mqtt] drop message after HMAC fail topic={topic}")
+                trace_mqtt(f"[{trace_id}] [mqtt] drop message after HMAC fail topic={topic}")
                 return  # reject and already logged
         else:
-            trace_mqtt("[mqtt] HMAC not configured — parsing raw JSON as payload")
+            trace_mqtt(f"[{trace_id}] [mqtt] HMAC not configured — parsing raw JSON as payload")
             try:
                 payload = json.loads(raw_payload)
             except (json.JSONDecodeError, UnicodeDecodeError):
                 payload = None
+                trace_mqtt(f"[{trace_id}] [mqtt] raw JSON parse failed; payload=None")
 
         try:
             # Handle individual tool status updates
@@ -606,7 +617,7 @@ class NEMOToolServer:
                 if event_type is None and isinstance(payload, dict) and isinstance(payload.get("event"), str):
                     event_type = payload.get("event")
                 logger.info(
-                    f"🔎 route inbound topic={topic} tool_identifier={tool_identifier} "
+                    f"[{trace_id}] 🔎 route inbound topic={topic} tool_identifier={tool_identifier} "
                     f"event_type={event_type} payload_type={type(payload).__name__}"
                 )
 
@@ -629,25 +640,25 @@ class NEMOToolServer:
                 tool_data.setdefault("timestamp", datetime.utcnow().isoformat() + "+00:00")
 
                 if isinstance(payload, dict):
-                    logger.info(f"📥 inbound  {topic} | {json.dumps(payload)}")
+                    logger.info(f"[{trace_id}] 📥 inbound  {topic} | {json.dumps(payload)}")
                 else:
                     logger.info(
-                        f"📥 inbound  {topic} | {raw_payload[:200]}{'...' if len(raw_payload) > 200 else ''}"
+                        f"[{trace_id}] 📥 inbound  {topic} | {raw_payload[:200]}{'...' if len(raw_payload) > 200 else ''}"
                     )
                 trace_mqtt(
-                    f"[mqtt] calling process_tool_status tool_identifier={tool_identifier!r} "
+                    f"[{trace_id}] [mqtt] calling process_tool_status tool_identifier={tool_identifier!r} "
                     f"event_type={event_type!r}"
                 )
-                self.process_tool_status(tool_identifier, tool_data, event_type)
+                self.process_tool_status(tool_identifier, tool_data, event_type, trace_id=trace_id)
 
             # Handle overall status updates
             elif topic == "nemo/tools/overall":
-                logger.info(f"📥 inbound  {topic} | {json.dumps(payload)}")
-                self.process_overall_status(payload)
+                logger.info(f"[{trace_id}] 📥 inbound  {topic} | {json.dumps(payload)}")
+                self.process_overall_status(payload, trace_id=trace_id)
 
             else:
                 logger.info(
-                    f"🔎 route bypass topic={topic} inferred_event_type={inferred_event_type} "
+                    f"[{trace_id}] 🔎 route bypass topic={topic} inferred_event_type={inferred_event_type} "
                     f"payload_type={type(payload).__name__ if payload is not None else 'None'}"
                 )
                 if payload is None:
@@ -659,15 +670,22 @@ class NEMOToolServer:
         except Exception as e:
             logger.exception(f"Error processing MQTT message: {e}")
     
-    def process_tool_status(self, tool_identifier: str, tool_data: dict, event_type: str = None):
+    def process_tool_status(
+        self,
+        tool_identifier: str,
+        tool_data: dict,
+        event_type: str = None,
+        trace_id: Optional[str] = None,
+    ):
         """Process individual tool status update and forward to ESP32 displays.
         
         NEMO sends separate events: enabled/disabled (tool on/off) and start/end (usage session).
         We forward start/end/enabled/disabled and map to a consistent vocabulary:
         active (in use), enabled (available), disabled (tool off).
         """
+        trace_prefix = f"[{trace_id}] " if trace_id else ""
         trace_mqtt(
-            f"[process_tool_status] enter tool_identifier={tool_identifier!r} event_type={event_type!r} "
+            f"{trace_prefix}[process_tool_status] enter tool_identifier={tool_identifier!r} event_type={event_type!r} "
             f"tool_data_keys={list(tool_data.keys())}"
         )
         try:
@@ -683,8 +701,8 @@ class NEMOToolServer:
                 try:
                     tool_id = int(tool_identifier)
                 except (ValueError, TypeError):
-                    logger.warning(f"Could not extract tool_id from payload or topic identifier '{tool_identifier}'")
-                    trace_mqtt("[process_tool_status] abort: no tool_id")
+                    logger.warning(f"{trace_prefix}Could not extract tool_id from payload or topic identifier '{tool_identifier}'")
+                    trace_mqtt(f"{trace_prefix}[process_tool_status] abort: no tool_id")
                     return
             
             # Extract tool_name from payload for display purposes only
@@ -702,13 +720,13 @@ class NEMOToolServer:
                 }
                 esp32_topic = f"nemo/esp32/{tool_id}/operational"
                 payload_json = json.dumps(esp32_operational)
-                logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
-                result = self._publish_to_esp32(esp32_topic, payload_json, "non_operational")
+                logger.info(f"{trace_prefix}📤 outbound {esp32_topic} | {payload_json}")
+                result = self._publish_to_esp32(esp32_topic, payload_json, "non_operational", trace_id=trace_id)
                 if result and result.rc == mqtt.MQTT_ERR_SUCCESS:
-                    logger.info(f"✅ {tool_name} (ID: {tool_id}): operational={operational} → ESP32")
+                    logger.info(f"{trace_prefix}✅ {tool_name} (ID: {tool_id}): operational={operational} → ESP32")
                 else:
                     logger.error(
-                        f"❌ Failed to forward operational: "
+                        f"{trace_prefix}❌ Failed to forward operational: "
                         f"{result.rc if result else 'no result'}"
                     )
                 return
@@ -725,13 +743,13 @@ class NEMOToolServer:
                 }
                 esp32_topic = f"nemo/esp32/{tool_id}/operational"
                 payload_json = json.dumps(esp32_operational)
-                logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
-                result = self._publish_to_esp32(esp32_topic, payload_json, "operational")
+                logger.info(f"{trace_prefix}📤 outbound {esp32_topic} | {payload_json}")
+                result = self._publish_to_esp32(esp32_topic, payload_json, "operational", trace_id=trace_id)
                 if result and result.rc == mqtt.MQTT_ERR_SUCCESS:
-                    logger.info(f"✅ {tool_name} (ID: {tool_id}): operational={operational} → ESP32")
+                    logger.info(f"{trace_prefix}✅ {tool_name} (ID: {tool_id}): operational={operational} → ESP32")
                 else:
                     logger.error(
-                        f"❌ Failed to forward operational: "
+                        f"{trace_prefix}❌ Failed to forward operational: "
                         f"{result.rc if result else 'no result'}"
                     )
                 return
@@ -748,15 +766,15 @@ class NEMOToolServer:
                 }
                 esp32_topic = f"nemo/esp32/{tool_id}/operational"
                 payload_json = json.dumps(esp32_operational)
-                logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
-                result = self._publish_to_esp32(esp32_topic, payload_json, "tool_updated")
+                logger.info(f"{trace_prefix}📤 outbound {esp32_topic} | {payload_json}")
+                result = self._publish_to_esp32(esp32_topic, payload_json, "tool_updated", trace_id=trace_id)
                 if result and result.rc == mqtt.MQTT_ERR_SUCCESS:
                     logger.info(
-                        f"✅ {tool_name} (ID: {tool_id}): tool_updated tool_status={operational} → ESP32 operational"
+                        f"{trace_prefix}✅ {tool_name} (ID: {tool_id}): tool_updated tool_status={operational} → ESP32 operational"
                     )
                 else:
                     logger.error(
-                        f"❌ Failed to forward tool_updated operational: "
+                        f"{trace_prefix}❌ Failed to forward tool_updated operational: "
                         f"{result.rc if result else 'no result'}"
                     )
                 return
@@ -767,15 +785,15 @@ class NEMOToolServer:
                 cancelled = tool_data.get("cancelled", False)
                 resolved = tool_data.get("resolved", False)
                 logger.info(
-                    f"🔎 task routing tool_id={tool_id} topic_event={event_type} payload_event={event_name} "
+                    f"{trace_prefix}🔎 task routing tool_id={tool_id} topic_event={event_type} payload_event={event_name} "
                     f"task_id={task_id} cancelled={cancelled} resolved={resolved}"
                 )
                 # Clear task on display: task_shutdown+cancelled OR task_updated+resolved
                 if (event_name == "task_shutdown" and cancelled) or resolved:
                     if resolved:
-                        logger.info(f"📥 task resolved=true → clearing task for tool {tool_id} ({tool_name})")
+                        logger.info(f"{trace_prefix}📥 task resolved=true → clearing task for tool {tool_id} ({tool_name})")
                     else:
-                        logger.info(f"📥 task_shutdown cancelled=true → clearing task for tool {tool_id} ({tool_name})")
+                        logger.info(f"{trace_prefix}📥 task_shutdown cancelled=true → clearing task for tool {tool_id} ({tool_name})")
                     problem_desc = ""
                     task_summary = ""
                     clear_reason = "resolved=true" if resolved else "task_shutdown+cancelled=true"
@@ -799,18 +817,18 @@ class NEMOToolServer:
                 esp32_topic = f"nemo/esp32/{tool_id}/task"
                 payload_json = json.dumps(esp32_task)
                 logger.info(
-                    f"📤 outbound {esp32_topic} | route_reason={clear_reason} "
+                    f"{trace_prefix}📤 outbound {esp32_topic} | route_reason={clear_reason} "
                     f"(task_id={task_id}, event={event_name}, summary len={len(task_summary)}, "
                     f"problem_description len={len(problem_desc)})"
                 )
                 logger.info(
-                    f"🔎 esp32 task payload tool_id={tool_id}: {payload_json}"
+                    f"{trace_prefix}🔎 esp32 task payload tool_id={tool_id}: {payload_json}"
                 )
-                result = self._publish_to_esp32(esp32_topic, payload_json, "task")
+                result = self._publish_to_esp32(esp32_topic, payload_json, "task", trace_id=trace_id)
                 if result and result.rc == mqtt.MQTT_ERR_SUCCESS:
-                    logger.info(f"✅ {tool_name} (ID: {tool_id}): task → ESP32")
+                    logger.info(f"{trace_prefix}✅ {tool_name} (ID: {tool_id}): task → ESP32")
                 else:
-                    logger.error(f"❌ Failed to forward task: {result.rc if result else 'no result'}")
+                    logger.error(f"{trace_prefix}❌ Failed to forward task: {result.rc if result else 'no result'}")
                 return
             
             # Extract user name from NEMO message
@@ -848,7 +866,7 @@ class NEMOToolServer:
                 esp32_event = ESP32_DISABLED
             else:
                 trace_mqtt(
-                    f"[process_tool_status] NO_FORWARD event_type={event_type!r} "
+                    f"{trace_prefix}[process_tool_status] NO_FORWARD event_type={event_type!r} "
                     f"(expects start|end|enabled|disabled|idle or operational/tasks branches above)"
                 )
                 return  # only forward start/end/enabled/disabled
@@ -898,35 +916,36 @@ class NEMOToolServer:
             
             esp32_topic = f"nemo/esp32/{tool_id}/status"
             payload_json = json.dumps(esp32_message)
-            logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
-            result = self._publish_to_esp32(esp32_topic, payload_json, f"tool_status_{esp32_event}")
+            logger.info(f"{trace_prefix}📤 outbound {esp32_topic} | {payload_json}")
+            result = self._publish_to_esp32(esp32_topic, payload_json, f"tool_status_{esp32_event}", trace_id=trace_id)
             if result and result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info(f"✅ {tool_name} (ID: {tool_id}): {esp32_event} → ESP32")
+                logger.info(f"{trace_prefix}✅ {tool_name} (ID: {tool_id}): {esp32_event} → ESP32")
             else:
                 logger.error(
-                    f"❌ Failed to forward tool {tool_id} status: "
+                    f"{trace_prefix}❌ Failed to forward tool {tool_id} status: "
                     f"{result.rc if result else 'no result'} "
                     f"({self.get_mqtt_error_description(result.rc) if result else 'n/a'})"
                 )
 
         except Exception as e:
-            logger.exception(f"Error processing tool status for {tool_identifier}: {e}")
+            logger.exception(f"{trace_prefix}Error processing tool status for {tool_identifier}: {e}")
     
-    def process_overall_status(self, overall_data: dict):
+    def process_overall_status(self, overall_data: dict, trace_id: Optional[str] = None):
         """Process overall status update and forward to ESP32 displays"""
         try:
+            trace_prefix = f"[{trace_id}] " if trace_id else ""
             # Forward to ESP32 displays using ESP32 client (port 1883)
             esp32_topic = "nemo/esp32/overall"
             payload_json = json.dumps(overall_data)
-            logger.info(f"📤 outbound {esp32_topic} | {payload_json}")
-            result = self._publish_to_esp32(esp32_topic, payload_json, "overall")
+            logger.info(f"{trace_prefix}📤 outbound {esp32_topic} | {payload_json}")
+            result = self._publish_to_esp32(esp32_topic, payload_json, "overall", trace_id=trace_id)
             if result and result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info("✅ overall → ESP32")
+                logger.info(f"{trace_prefix}✅ overall → ESP32")
             else:
-                logger.warning(f"Failed to forward overall status: {result.rc if result else 'no result'}")
+                logger.warning(f"{trace_prefix}Failed to forward overall status: {result.rc if result else 'no result'}")
                 
         except Exception as e:
-            logger.error(f"Error processing overall status: {e}")
+            logger.error(f"{trace_prefix}Error processing overall status: {e}")
     
     
     async def start(self) -> str:

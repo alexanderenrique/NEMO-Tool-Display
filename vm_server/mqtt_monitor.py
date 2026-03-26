@@ -469,19 +469,10 @@ class ComprehensiveMQTTMonitor:
         tcp_e = self._tcp_established_count(self.mqtt_port_esp32)
         tcp_n = self._tcp_established_count(self.mqtt_port)
         with self._stats_lock:
-            sys_c = self.sys_broker_clients_connected
-            sys_max = self.sys_broker_clients_maximum
             up = self.sys_broker_uptime
 
         print(f"\n{'=' * 80}", flush=True)
         print(f"[{now}] 🔌 Connection snapshot (every {int(self.STATUS_INTERVAL_SEC)}s)", flush=True)
-        print(
-            f"  Broker $SYS clients connected: "
-            f"{sys_c if sys_c is not None else '(waiting for $SYS — subscribe did not receive yet)'}",
-            flush=True,
-        )
-        if sys_max is not None:
-            print(f"  Broker $SYS clients maximum (session peak): {sys_max}", flush=True)
         if up is not None:
             print(f"  Broker $SYS uptime (seconds): {up}", flush=True)
         print(
