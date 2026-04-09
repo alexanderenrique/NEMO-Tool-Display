@@ -797,6 +797,8 @@ class NEMOToolServer:
                     problem_desc = ""
                     task_summary = ""
                     clear_reason = "resolved=true" if resolved else "task_shutdown+cancelled=true"
+                    # ESP retained /task must not use event=task_shutdown with empty body (misleading vs real shutdown).
+                    esp32_event = "task_resolved" if resolved else "task_cleared"
                 else:
                     problem_desc = tool_data.get("problem_description", "")
                     # Use only task_summary or description; never show internal event names on the display
@@ -807,8 +809,9 @@ class NEMOToolServer:
                     if task_summary.strip().lower() in ("task_shutdown", "task_updated", "task", "task_created"):
                         task_summary = ""
                     clear_reason = "display_task_content"
+                    esp32_event = event_name
                 esp32_task = {
-                    "event": event_name,
+                    "event": esp32_event,
                     "task_id": task_id,
                     "tool_id": tool_id,
                     "task_summary": task_summary,
@@ -816,9 +819,26 @@ class NEMOToolServer:
                 }
                 esp32_topic = f"nemo/esp32/{tool_id}/task"
                 payload_json = json.dumps(esp32_task)
+
+                # Publish operational false *before* task so on ESP reconnect retained order tends to
+                # apply non-operational before shutdown task text (ESP uses operational topic only for UI mode).
+                if event_name == "task_shutdown" and not cancelled and not resolved:
+                    ts = tool_data.get("timestamp", _utcnow().isoformat() + "+00:00")
+                    esp32_operational = {
+                        "operational": False,
+                        "tool_id": tool_id,
+                        "tool_name": tool_name,
+                        "timestamp": ts,
+                    }
+                    op_topic = f"nemo/esp32/{tool_id}/operational"
+                    op_json = json.dumps(esp32_operational)
+                    self._publish_to_esp32(
+                        op_topic, op_json, "task_shutdown_operational_false", trace_id=trace_id
+                    )
+
                 logger.info(
                     f"{trace_prefix}📤 outbound {esp32_topic} | route_reason={clear_reason} "
-                    f"(task_id={task_id}, event={event_name}, summary len={len(task_summary)}, "
+                    f"(task_id={task_id}, event={esp32_event}, summary len={len(task_summary)}, "
                     f"problem_description len={len(problem_desc)})"
                 )
                 logger.info(

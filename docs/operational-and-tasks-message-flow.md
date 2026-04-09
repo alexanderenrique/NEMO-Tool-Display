@@ -10,7 +10,7 @@ This document describes the **operational** and **tasks** logic: what the VM ser
   - NEMO publishes to `nemo/tools/{tool_id}/{event_type}`. The server subscribes, then forwards to ESP32 on `nemo/esp32/{tool_id}/...` (status, operational, task).
 - **ESP32 (C++):** `Display-Code/src/main.cpp`  
   - Subscribes to `nemo/esp32/{tool_id}/status`, `.../operational`, `.../task`, and `.../overall`.  
-  - Holds independent state: `tool_operational`, `has_task`, `task_summary`, `problem_description`, plus status (enabled/disabled, user, time).  
+  - Holds state: **`tool_operational` comes only from `.../operational`** (the task topic does not change it). `has_task`, `task_summary`, `problem_description` come from the task store; status (enabled/disabled, user, time) from `.../status`.  
   - Maintains a **per-task store** (multiple tasks keyed by `task_id`); `has_task` and the displayed summary/description are derived from that store.
 
 ---
@@ -25,10 +25,10 @@ The VM server derives `event_type` from the **fourth** segment of the topic:
 |-------------------------|------------------|
 | `nemo/tools/{id}/non-operational` | Sends **operational** message to ESP32 (see below). |
 | `nemo/tools/{id}/operational`     | Sends **operational** message to ESP32. |
-| `nemo/tools/{id}/tasks`          | Sends **task** message to ESP32 (with special case for `task_shutdown` + `cancelled`). |
+| `nemo/tools/{id}/tasks`          | Sends **task** message to ESP32; for **real** `task_shutdown` (not cancelled, not resolved-only clear) also sends **`.../operational` with `operational: false`** if NEMO did not already use `non-operational`. Clear paths use `event` **`task_cleared`** / **`task_resolved`** on the ESP payload (not `task_shutdown` with empty body). |
 | `nemo/tools/{id}/start`, `end`, `enabled`, `disabled`, `idle` | Sends **status** message only (no change to operational/task). |
 
-Operational and task are **independent**: either can be sent in any order; the ESP32 merges them in its own state.
+Operational and task are **independent** for *content*: either can arrive in any order. **`tool_operational` is applied only from the operational topic** so retained `/task` cannot override shut-down UI after reconnect.
 
 ---
 
@@ -37,7 +37,7 @@ Operational and task are **independent**: either can be sent in any order; the E
 ### 3.1 Operational message
 
 **Topic:** `nemo/esp32/{tool_id}/operational`  
-**When:** On NEMO `nemo/tools/{id}/non-operational` or `nemo/tools/{id}/operational`.
+**When:** On NEMO `nemo/tools/{id}/non-operational`, `nemo/tools/{id}/operational`, or `nemo/tools/{id}/tool_updated` (with `tool_status`). Also, when the VM forwards a **non-cancelled** `task_shutdown` task from NEMO, it publishes **`operational: false`** here (same as legacy ESP behavior when NEMO omitted `non-operational`).
 
 **Payload (JSON):**
 
@@ -78,6 +78,7 @@ Published with **QoS 1**, **retain = true**, so reconnecting ESP32s get the last
 If NEMO sends a **task** event with `event == "task_shutdown"` and `cancelled == true`, or with `resolved == true` (e.g. `task_updated`), the server sends a **clear** payload:
 
 - `task_summary` and `problem_description` are sent as **empty strings**.
+- Outbound **`event`** is **`task_cleared`** (cancelled shutdown) or **`task_resolved`** (`resolved`), so the retained message is not misread as a real `task_shutdown` with no text.
 - `task_id` is still included when present from NEMO (so the ESP32 can clear only that task when multiple exist).
 
 Otherwise:
@@ -119,7 +120,7 @@ After each update, the ESP32 derives:
 
 ### 4.2 State variables (from MQTT)
 
-- **tool_operational** (from `.../operational`): `true` = normal screen, `false` = red “non-operational” screen.
+- **tool_operational** (from `.../operational` **only**): `true` = normal screen, `false` = red **“{Tool} shut down”** screen.
 - **has_task** (derived from task store): `true` iff at least one task is in the store.
 - **task_summary**, **problem_description** (derived from task store): Aggregated task text; summary on Status tab (and on red screen), full description on Details tab.
 - **last_status_enabled** (from `.../status`): Used only when **tool_operational** is true, to set border green (enabled) or red (disabled).
@@ -128,22 +129,21 @@ After each update, the ESP32 derives:
 ### 4.3 Main screen logic (`applyMainScreenState()`)
 
 - **If `!tool_operational`:**
-  - Hide **normal** container (white status view).
-  - Show **non-operational** container (full red screen).
-  - Title: **“{toolDisplayName} is non-operational”**.
-  - Body: **task_summary** in `non_operational_task_label` (white text). If there is no task, this is empty.
+  - Full red main screen (same layout as normal status view).
+  - Title: **“{toolDisplayName} shut down”**.
+  - Body: **task_summary** (white text). If there is no task, this is empty.
   - Details tab: **problem_description** (or “No problem description.”).
 
 - **If `tool_operational`:**
-  - Show normal container, hide non-operational container.
+  - White background, normal layout.
   - Border color from **status** + **task**:
     - **Yellow** if `has_task`.
     - Else **green** if `last_status_enabled`, else **red**.
 
 So:
 
-- **Operational** message alone → switches between normal view and red “non-operational” view.
-- **Task** message alone → updates task text and `has_task`; when operational, border turns yellow if there is a task.
+- **Operational** message alone → switches between normal view and red shut-down view.
+- **Task** message alone → updates task text and `has_task` only; **does not** set `tool_operational`. When operational, border turns yellow if there is a task.
 
 ---
 
@@ -221,7 +221,8 @@ So:
 | Tool goes non-operational (shutdown) | `.../operational` with `operational: false` | Red screen “{Tool} is non-operational” + current task summary (or empty). |
 | Tool goes back operational | `.../operational` with `operational: true` | Normal screen; border yellow if task, else green/red from status. |
 | New/updated task | `.../task` with summary + problem_description | Task text updated; if operational, border turns yellow; if non-operational, red screen shows new summary. |
-| Task cancelled (task_shutdown, cancelled=true) | `.../task` with empty summary + problem_description (+ `task_id` for clear-one) | If `task_id` present: that task removed from store; `has_task` true iff other tasks remain; problem description shows remaining tasks. If no `task_id`: clear-all; `has_task = false`. |
+| Task cancelled (task_shutdown, cancelled=true) | `.../task` with `event` **`task_cleared`**, empty summary + description (+ `task_id` for clear-one) | Same clear behavior; **`tool_operational`** follows last `.../operational` only (often still false if tool remains shut down). |
+| NEMO `task_shutdown` without separate non-operational | VM sends `.../operational` `false` **then** `.../task` (shutdown content) | Red shut-down UI with task text; operational is published first to reduce reconnect ordering glitches. |
 | Task then shutdown | Only `.../operational` false | Red screen with existing task text. |
 | Shutdown then task | Only `.../task` | Red screen with new task text. |
 | Shutdown then task cancelled | Only `.../task` (empty) | Red screen, no task text. |

@@ -19,7 +19,7 @@ String mqtt_topic_operational = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_
 String mqtt_topic_task = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/task";
 String mqtt_topic_overall = String(MQTT_TOPIC_PREFIX) + "/overall";
 
-// State from separate MQTT messages (operational and task)
+// State: tool_operational from .../operational only; task topic updates task store + UI copy only
 bool tool_operational = true;
 bool has_task = false;
 String task_summary = "";       // Derived from task store (aggregated)
@@ -93,7 +93,7 @@ void processMQTTMessage(const char* topic, const char* payload);
 void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
 void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data);
 void create_simple_ui();
-String capitalizeToolName(const char* toolName);
+String toolNameForDisplay(const char* toolName);
 void updateConnectionStatus();
 void updateStatusIndicator(bool isEnabled);  // Inner ring: enabled (green) / disabled (red)
 void updateOuterRing(bool hasTask);          // Outer ring: yellow if task, else none
@@ -105,8 +105,8 @@ void setup() {
   Serial.begin(9600);
   Serial.println("NEMO Tool Display - Simple Test Starting...");
   
-  // Initialize tool display name from config (for display purposes only)
-  toolDisplayName = capitalizeToolName(TARGET_TOOL_NAME);
+  // Initialize tool display name from config until MQTT provides tool_name (same as NEMO: no reformatting)
+  toolDisplayName = toolNameForDisplay(TARGET_TOOL_NAME);
   Serial.print("Tool Display Name: ");
   Serial.println(toolDisplayName);
   
@@ -172,7 +172,35 @@ void loop() {
     static unsigned long lastWifiAttempt = 0;
     static unsigned long lastMqttAttempt = 0;
     static unsigned long lastStatusUpdate = 0;
+    static bool linkLogInit = false;
+    static bool prevWifiUp = false;
+    static bool prevMqttUp = false;
     unsigned long now = millis();
+
+    const bool wifiUp = (WiFi.status() == WL_CONNECTED);
+    const bool mqttUp = mqttClient.connected();
+    if (!linkLogInit) {
+      prevWifiUp = wifiUp;
+      prevMqttUp = mqttUp;
+      linkLogInit = true;
+    } else {
+      if (wifiUp != prevWifiUp) {
+        Serial.print(now);
+        Serial.print(" ms [link] WiFi ");
+        Serial.println(wifiUp ? "CONNECTED" : "DISCONNECTED");
+      }
+      if (mqttUp != prevMqttUp) {
+        Serial.print(now);
+        Serial.print(" ms [link] MQTT ");
+        Serial.print(mqttUp ? "CONNECTED" : "DISCONNECTED");
+        if (mqttUp)
+          Serial.println(" (broker may deliver retained operational/task/status next)");
+        else
+          Serial.println();
+      }
+      prevWifiUp = wifiUp;
+      prevMqttUp = mqttUp;
+    }
 
     // Periodically try to (re)connect WiFi if not connected
     if (WiFi.status() != WL_CONNECTED) {
@@ -738,11 +766,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   memcpy(message, payload, length);
   message[length] = '\0';
   
-  Serial.print("Message arrived [");
+  Serial.print(millis());
+  Serial.print(" ms [mqtt] rx topic=");
   Serial.print(topic);
-  Serial.print("] (");
-  Serial.print(length);
-  Serial.println(" bytes)");
+  Serial.print(" len=");
+  Serial.println(length);
   
   processMQTTMessage(topic, message);
 }
@@ -762,12 +790,13 @@ void processMQTTMessage(const char* topic, const char* payload) {
   if (strcmp(topic, mqtt_topic_operational.c_str()) == 0) {
     tool_operational = doc["operational"] | true;
     if (doc["tool_name"].is<const char*>()) {
-      toolDisplayName = capitalizeToolName(doc["tool_name"].as<const char*>());
+      toolDisplayName = toolNameForDisplay(doc["tool_name"].as<const char*>());
       if (title_label)
         lv_label_set_text(title_label, toolDisplayName.c_str());
     }
     applyMainScreenState();
-    Serial.print("Operational: ");
+    Serial.print(millis());
+    Serial.print(" ms [state] operational topic -> tool_operational=");
     Serial.println(tool_operational ? "true" : "false");
     return;
   }
@@ -815,16 +844,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
       Serial.println((long)task_id_val);
     }
 
-    // Shutdown event can arrive on /task before (or without) /operational update.
-    // Force non-operational state immediately so UI switches to red background + white text.
-    if (msg_event.equalsIgnoreCase("task_shutdown")) {
-      tool_operational = false;
-      last_status_enabled = false;
-      Serial.println("Task event=task_shutdown -> forcing non-operational UI state");
-    } else if (msg_event.equalsIgnoreCase("task_resolved") || msg_event.equalsIgnoreCase("task_cleared")) {
-      tool_operational = true;
-      Serial.println("Task event indicates recovery -> forcing operational UI state");
-    }
+    // tool_operational is driven only by .../operational (avoids retain/reorder bugs with /task).
 
     has_task = taskStoreHasAny();
     task_summary = taskStoreGetAggregatedSummary();
@@ -845,9 +865,12 @@ void processMQTTMessage(const char* topic, const char* payload) {
     }
 
     applyMainScreenState();
-    Serial.print("Task: has_task=");
+    Serial.print(millis());
+    Serial.print(" ms [state] task event=");
+    Serial.print(msg_event.length() ? msg_event.c_str() : "(none)");
+    Serial.print(" has_task=");
     Serial.print(has_task ? "1" : "0");
-    Serial.print(" tasks count=");
+    Serial.print(" count=");
     Serial.println(taskStoreCount());
     return;
   }
@@ -874,7 +897,7 @@ void processMQTTMessage(const char* topic, const char* payload) {
     }
     if (doc["tool_name"].is<const char*>()) {
       const char* toolNameFromPayload = doc["tool_name"];
-      String newDisplayName = capitalizeToolName(toolNameFromPayload);
+      String newDisplayName = toolNameForDisplay(toolNameFromPayload);
       if (newDisplayName != toolDisplayName && title_label) {
         toolDisplayName = newDisplayName;
         lv_label_set_text(title_label, toolDisplayName.c_str());
@@ -896,34 +919,12 @@ void processMQTTMessage(const char* topic, const char* payload) {
   }
 }
 
-// Capitalize tool name for display
-String capitalizeToolName(const char* toolName) {
+// Show tool_name exactly as sent by NEMO (punctuation and capitalization unchanged).
+String toolNameForDisplay(const char* toolName) {
   if (!toolName || strlen(toolName) == 0) {
     return "Unknown Tool";
   }
-  
-  String result = "";
-  bool capitalizeNext = true;
-  
-  for (int i = 0; toolName[i] != '\0'; i++) {
-    char c = toolName[i];
-    
-    if (c == '_' || c == '-') {
-      result += ' ';
-      capitalizeNext = true;
-    } else if (capitalizeNext && c >= 'a' && c <= 'z') {
-      result += (char)(c - 32); // Convert to uppercase
-      capitalizeNext = false;
-    } else if (capitalizeNext && c >= 'A' && c <= 'Z') {
-      result += c; // Already uppercase
-      capitalizeNext = false;
-    } else {
-      result += c;
-      capitalizeNext = false;
-    }
-  }
-  
-  return result;
+  return String(toolName);
 }
 
 // Update consolidated connection status (text only; applyMainScreenState sets color by operational state)
