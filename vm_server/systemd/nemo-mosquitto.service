@@ -1,8 +1,10 @@
 # NEMO Tool Display — Mosquitto using vm_server/mqtt/config/mosquitto.conf
 # Run in foreground (no -d) so systemd supervises the process.
 #
-# 1. Edit NEMO_VM_SERVER_DIR and MOSQUITTO_BIN below if needed (find mosquitto: command -v mosquitto).
-# 2. Install the unit and reload:
+# 1. Set the same absolute vm_server path in Environment=NEMO_VM_SERVER_DIR, WorkingDirectory=, and
+#    the -c path in ExecStart= (systemd does not expand ${VAR} in WorkingDirectory=/ExecStart=).
+# 2. If mosquitto is not at /usr/sbin/mosquitto, change the binary path in ExecStart= (command -v mosquitto).
+# 3. Install the unit and reload:
 #      sudo cp /path/to/vm_server/systemd/nemo-mosquitto.service /etc/systemd/system/
 #      sudo systemctl daemon-reload && sudo systemctl enable --now nemo-mosquitto.service
 #
@@ -18,9 +20,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=NEMO_VM_SERVER_DIR=/opt/NEMO-Tool-Display/vm_server
-Environment=MOSQUITTO_BIN=/usr/sbin/mosquitto
-WorkingDirectory=${NEMO_VM_SERVER_DIR}
-ExecStart=${MOSQUITTO_BIN} -c ${NEMO_VM_SERVER_DIR}/mqtt/config/mosquitto.conf
+WorkingDirectory=/opt/NEMO-Tool-Display/vm_server
+ExecStart=/usr/sbin/mosquitto -c /opt/NEMO-Tool-Display/vm_server/mqtt/config/mosquitto.conf
 Restart=on-failure
 RestartSec=5
 

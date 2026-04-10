@@ -49,8 +49,8 @@ To undo later: `sudo systemctl unmask mosquitto`.
 2. Copy (or symlink) the units into `/etc/systemd/system/`:
 
 ```bash
-sudo cp /path/to/vm_server/systemd/nemo-mosquitto.service /etc/systemd/system/
-sudo cp /path/to/vm_server/systemd/nemo-vm-server.service /etc/systemd/system/
+sudo cp /opt/NEMO-Tool-Display/vm_server/systemd/nemo-mosquitto.service /etc/systemd/system/
+sudo cp /opt/NEMO-Tool-Display/vm_server/systemd/nemo-vm-server.service /etc/systemd/system/
 
 sudo systemctl daemon-reload
 ```
