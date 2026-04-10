@@ -18,10 +18,13 @@ Use this on your Linux VM so the MQTT broker and NEMO server **start at boot** a
    ```
    Put that path in `MOSQUITTO_BIN=` under `[Service]` in `nemo-mosquitto.service`.
 3. **Finish app setup** from `vm_server` (venv, `config.env`, passwords, etc.) using `./setup.sh` or your usual process so `mqtt/config/mosquitto.conf` and `mqtt/config/passwd` exist and are valid. **`mosquitto.conf` is gitignored**—a clone has only `mosquitto.conf.example` until you run setup or copy it; without the real file, `nemo-mosquitto` will refuse to start.
-4. **Permissions**: if you set `User=` / `Group=` on `nemo-mosquitto.service`, that account must read `mqtt/config/passwd` and read/write `mqtt/data/` and `mqtt/log/`. Fix ownership if needed:
+4. **Permissions**: the distro `mosquitto` binary **drops to the `mosquitto` system user** after start (even when systemd does **not** set `User=`). Files created by `./setup.sh` are usually owned by your login user, with `mqtt/config/passwd` at mode `600`, so the broker cannot read the password file or write `mqtt/log/mosquitto.log`. Fix once (adjust the path):
    ```bash
-   sudo chown -R YOUR_USER:YOUR_GROUP /path/to/vm_server/mqtt
+   sudo chown -R mosquitto:mosquitto /path/to/vm_server/mqtt/data /path/to/vm_server/mqtt/log
+   sudo chown mosquitto:mosquitto /path/to/vm_server/mqtt/config/passwd
+   sudo chmod 600 /path/to/vm_server/mqtt/config/passwd
    ```
+   Keep `mqtt/config/mosquitto.conf` readable by `mosquitto` (e.g. `644`, or root:`mosquitto` and `640`). If you instead set `User=` / `Group=` in the unit file, use that account everywhere above instead of `mosquitto`.
 
 ---
 
@@ -105,7 +108,7 @@ systemctl is-active nemo-mosquitto.service nemo-vm-server.service
 Common issues:
 
 - **Ports in use**: something else (including old `mosquitto.service`) still bound to 1883/1886—finish step 2 and reboot once.
-- **Permission denied** on `passwd` or `mqtt/data`: fix `chown`/`chmod` for your service user.
+- **Unable to open** `passwd` or **log file** under `mqtt/log/`: almost always the `mosquitto` user (privilege drop) vs. files owned by your admin account—use the `chown` commands in step 1.4.
 - **Wrong cwd / paths**: `WorkingDirectory` must be your `vm_server` root so paths inside `mosquitto.conf` (e.g. `mqtt/data/`) resolve correctly.
 
 ---

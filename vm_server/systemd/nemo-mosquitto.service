@@ -8,7 +8,9 @@
 #      sudo cp /path/to/vm_server/systemd/nemo-mosquitto.service /etc/systemd/system/
 #      sudo systemctl daemon-reload && sudo systemctl enable --now nemo-mosquitto.service
 #
-# User=/Group=: optional — add under [Service] for non-root.
+# User=/Group=: optional. Even without them, mosquitto drops to the "mosquitto" OS user,
+# so mqtt/data, mqtt/log, and mqtt/config/passwd must be owned (or readable/writable) by
+# mosquitto—see SYSTEMD_ALWAYS_ON.md §1 step 4.
 # Requires mqtt/config/mosquitto.conf (gitignored until setup).
 
 [Unit]
