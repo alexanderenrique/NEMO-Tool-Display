@@ -2,7 +2,7 @@
 
 Use this on your Linux VM so the MQTT broker and NEMO server **start at boot** and **restart after crashes or power loss** (once the machine is back up).
 
-Replace every **`CHANGE_ME_VM_SERVER_DIR`** with the absolute path to your `vm_server` directory (the folder that contains `main.py`, `venv/`, `mqtt/`, and `config.env`). Replace **`CHANGE_ME`** with the Unix user (and group) that should own the process—typically the account you deploy with, **not** root.
+Replace **`CHANGE_ME_VM_SERVER_DIR`** in **both** unit files with the absolute path to your `vm_server` directory (the folder that contains `main.py`, `venv/`, `mqtt/`, and `config.env`). In each file that is the single `Environment=NEMO_VM_SERVER_DIR=...` line. **`User=` / `Group=` are optional** on both services (omit or leave commented for root; set them for production least-privilege).
 
 ---
 
@@ -18,7 +18,7 @@ Replace every **`CHANGE_ME_VM_SERVER_DIR`** with the absolute path to your `vm_s
    ```
    Edit `ExecStart` in `nemo-mosquitto.service` if the path is not `/usr/sbin/mosquitto`.
 3. **Finish app setup** from `vm_server` (venv, `config.env`, passwords, etc.) using `./setup.sh` or your usual process so `mqtt/config/mosquitto.conf` and `mqtt/config/passwd` exist and are valid.
-4. **Permissions**: the service `User` must be able to read `mqtt/config/passwd`, read/write `mqtt/data/` and `mqtt/log/`. Fix ownership if needed:
+4. **Permissions**: if you set `User=` / `Group=` on `nemo-mosquitto.service`, that account must read `mqtt/config/passwd` and read/write `mqtt/data/` and `mqtt/log/`. Fix ownership if needed:
    ```bash
    sudo chown -R YOUR_USER:YOUR_GROUP /path/to/vm_server/mqtt
    ```
@@ -50,9 +50,7 @@ From your checkout (paths adjusted):
 ```bash
 cd /path/to/vm_server
 
-# Edit placeholders in BOTH files before copying:
-#   CHANGE_ME_VM_SERVER_DIR  → absolute path to vm_server
-#   CHANGE_ME                → deploy user (and Group=)
+# Edit CHANGE_ME_VM_SERVER_DIR in both files (Environment=NEMO_VM_SERVER_DIR=...); optional User=/Group= on vm-server
 nano systemd/nemo-mosquitto.service
 nano systemd/nemo-vm-server.service
 

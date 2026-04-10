@@ -2,7 +2,7 @@
 # restarts automatically after crashes.
 #
 # Install (Linux VM):
-#   1. Edit WorkingDirectory, ExecStart User, and paths below to match your deployment.
+#   1. Edit NEMO_VM_SERVER_DIR below (one line). Optionally uncomment User=/Group= for non-root.
 #   2. sudo cp systemd/nemo-vm-server.service /etc/systemd/system/
 #   3. sudo systemctl daemon-reload
 #   4. sudo systemctl enable --now nemo-vm-server.service
@@ -12,7 +12,7 @@
 #   sudo systemctl start nemo-vm-server.service
 #
 # Logs: journalctl -u nemo-vm-server.service -f
-#       plus nemo_server.log under WorkingDirectory (from Python logging).
+#       plus nemo_server.log under vm_server (Python logging uses cwd).
 
 [Unit]
 Description=NEMO Tool Display VM server (main.py)
@@ -22,13 +22,12 @@ Requires=nemo-mosquitto.service
 
 [Service]
 Type=simple
-# If you see Result: exit-code status=217/USER, User=/Group= pointed at a non-existent account.
-# Fix: set both to a real local user (e.g. ubuntu) or omit User=/Group= entirely to run as root (dev only).
+Environment=PYTHONUNBUFFERED=1
+Environment=NEMO_VM_SERVER_DIR=CHANGE_ME_VM_SERVER_DIR
+# If you see status=217/USER, User=/Group= referred to a missing account — fix or leave commented for root.
 # User=ubuntu
 # Group=ubuntu
-WorkingDirectory=CHANGE_ME_VM_SERVER_DIR
-Environment=PYTHONUNBUFFERED=1
-ExecStart=CHANGE_ME_VM_SERVER_DIR/venv/bin/python3 CHANGE_ME_VM_SERVER_DIR/main.py
+ExecStart=/bin/sh -c 'cd "${NEMO_VM_SERVER_DIR}" && exec ./venv/bin/python3 ./main.py'
 Restart=on-failure
 RestartSec=5
 
