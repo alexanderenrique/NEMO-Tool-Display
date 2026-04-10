@@ -1,15 +1,15 @@
 # NEMO Tool Display — run main.py under systemd so it survives SSH disconnect and
 # restarts automatically after crashes.
 #
-# 1. Set the same absolute vm_server path in Environment=NEMO_VM_SERVER_DIR, WorkingDirectory=, and
+# 1. Set the same absolute vm-server path in Environment=NEMO_VM_SERVER_DIR, WorkingDirectory=, and
 #    ExecStart= (systemd does not expand ${VAR} in WorkingDirectory=/ExecStart=).
 # 2. Install the unit and reload:
-#      sudo cp /path/to/vm_server/systemd/nemo-vm-server.service /etc/systemd/system/
+#      sudo cp /path/to/vm-server/systemd/nemo-vm-server.service /etc/systemd/system/
 #      sudo systemctl daemon-reload && sudo systemctl enable --now nemo-vm-server.service
 #
 # If you see status=217/USER, User=/Group= referred to a missing account — fix or leave commented for root.
 # Logs: journalctl -u nemo-vm-server.service -f
-#       plus nemo_server.log under vm_server (Python logging uses cwd).
+#       plus nemo_server.log under vm-server (Python logging uses cwd).
 
 [Unit]
 Description=NEMO Tool Display VM server (main.py)
@@ -20,9 +20,9 @@ Requires=nemo-mosquitto.service
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-Environment=NEMO_VM_SERVER_DIR=/opt/NEMO-Tool-Display/vm_server
-WorkingDirectory=/opt/NEMO-Tool-Display/vm_server
-ExecStart=/opt/NEMO-Tool-Display/vm_server/venv/bin/python3 /opt/NEMO-Tool-Display/vm_server/main.py
+Environment=NEMO_VM_SERVER_DIR=/opt/NEMO-Tool-Display/vm-server
+WorkingDirectory=/opt/NEMO-Tool-Display/vm-server
+ExecStart=/opt/NEMO-Tool-Display/vm-server/venv/bin/python3 /opt/NEMO-Tool-Display/vm-server/main.py
 Restart=on-failure
 RestartSec=5
 # User=ubuntu

@@ -6,7 +6,7 @@ IoT system with ESP32 displays that show real-time tool status from the NEMO bac
 
 ### 1. VM Server Setup
 ```bash
-cd vm_server
+cd vm-server
 ./setup.sh
 ```
 
@@ -17,13 +17,13 @@ The setup script will:
 - Start MQTT broker and NEMO server
 
 ### 2. ESP32 Configuration
-Edit `Display-Code/src/config.h` with your WiFi SSID/password, MQTT broker and credentials, and tool name (e.g. `TARGET_TOOL_NAME`).
+Edit `display-firmware/src/config.h` with your WiFi SSID/password, MQTT broker and credentials, and tool name (e.g. `TARGET_TOOL_NAME`).
 
 **⚠️ SECURITY WARNING:** Never commit real WiFi credentials, MQTT passwords, or IP addresses to version control!
 
 ### 3. Upload Firmware
 ```bash
-cd Display-Code && pio run -t upload
+cd display-firmware && pio run -t upload
 ```
 
 ## Hardware Connections
@@ -59,8 +59,9 @@ VCC
 The system uses **centralized configuration** to ensure consistency between ESP32 and VM server:
 
 ### Centralized Configuration System
-- **`Display-Code/src/config.h`** - Single configuration file (WiFi, MQTT, tool, display; not overridden by build flags)
-- **`vm_server/config_parser.py`** - Python parser that reads from `Display-Code/src/config.h`
+- **`display-firmware/src/config.h`** - Single configuration file (WiFi, MQTT, tool, display; not overridden by build flags)
+- **`vm-server/config_parser.py`** - Python parser that reads from `display-firmware/src/config.h`
+- **`NEMO_CONFIG_H`** (optional) - Absolute path to `config.h` when the firmware tree is not at `display-firmware/` beside `vm-server/`
 
 ### VM Server (config.env)
 ```env
@@ -76,13 +77,13 @@ MAX_NAME_LENGTH=13
 LOG_LEVEL=INFO
 ```
 
-### ESP32 (Display-Code/src/config.h)
-All ESP32 settings (WiFi, MQTT broker/port/credentials, tool ID/name, display) are in `Display-Code/src/config.h`. When broker authentication is enabled on the VM server, set `MQTT_USERNAME` and `MQTT_PASSWORD` in `Display-Code/src/config.h` to match `vm_server/config.env`.
+### ESP32 (display-firmware/src/config.h)
+All ESP32 settings (WiFi, MQTT broker/port/credentials, tool ID/name, display) are in `display-firmware/src/config.h`. When broker authentication is enabled on the VM server, set `MQTT_USERNAME` and `MQTT_PASSWORD` in `display-firmware/src/config.h` to match `vm-server/config.env`.
 
 ### Port Configuration
 - **ESP32 Port (1883)**: Used by ESP32 displays to receive status updates
 - **NEMO Port (1886)**: Used by VM server to receive messages from NEMO backend
-- **Configuration**: ESP32 port in `Display-Code/src/config.h`, NEMO port in `config.env`
+- **Configuration**: ESP32 port in `display-firmware/src/config.h`, NEMO port in `config.env`
 
 Tool names are provided in MQTT messages from NEMO; no separate tool lookup or mapping file is required.
 
@@ -164,8 +165,8 @@ Verification uses the same secret (UTF-8), hashes the `payload` string as-is (UT
 11. **Start NEMO Server** - Launch Python application
 
 ### ESP32 Setup Steps
-1. **Configure WiFi** - Set SSID and password in `Display-Code/src/config.h`
-2. **Configure MQTT** - Set broker IP and port in `Display-Code/src/config.h`
+1. **Configure WiFi** - Set SSID and password in `display-firmware/src/config.h`
+2. **Configure MQTT** - Set broker IP and port in `display-firmware/src/config.h`
 3. **Set Tool Name** - Specify which tool this display shows
 4. **Upload Firmware** - Compile and flash to ESP32
 
@@ -173,12 +174,12 @@ Verification uses the same secret (UTF-8), hashes the `payload` string as-is (UT
 
 ### ESP32 Issues
 **Can't connect to WiFi:**
-- Check WiFi credentials in `Display-Code/src/config.h`
+- Check WiFi credentials in `display-firmware/src/config.h`
 - Verify network is 2.4GHz (ESP32 doesn't support 5GHz)
 - Check signal strength
 
 **Can't connect to MQTT:**
-- Verify MQTT broker IP address in `Display-Code/src/config.h`
+- Verify MQTT broker IP address in `display-firmware/src/config.h`
 - Check MQTT port (1883 for ESP32, 1886 for NEMO backend)
 - Ensure ESP32 and server are on same network
 - Check MQTT broker IP and port match the server
@@ -190,7 +191,7 @@ Verification uses the same secret (UTF-8), hashes the `payload` string as-is (UT
 
 ### VM Server Issues
 **MQTT broker won't start:**
-- Check logs: `tail -f vm_server/mqtt/log/mosquitto.log`
+- Check logs: `tail -f vm-server/mqtt/log/mosquitto.log`
 - Verify ports 1883 and 1886 are not in use
 - Check Mosquitto configuration: `mosquitto -c mqtt/config/mosquitto.conf -v`
 
@@ -201,9 +202,9 @@ Verification uses the same secret (UTF-8), hashes the `payload` string as-is (UT
 - Test MQTT: `mosquitto_sub -h localhost -t "nemo/#" -v`
 
 **NEMO backend MQTT "unauthorized" (rc=5) or connection timeout:**
-- The NEMO Django app (nemo-ce-alex) must use the **same** broker, port, username, and password as `vm_server/config.env`. Set NEMO's MQTT settings to match: `MQTT_BROKER` (use the machine IP where Mosquitto runs, or `localhost` if NEMO and Mosquitto run on the same host), `MQTT_PORT=1886`, `MQTT_USERNAME` and `MQTT_PASSWORD` identical to config.env.
-- **Unauthorized (rc=5)**: Username/password in NEMO do not match the broker's password file. Re-run `vm_server/setup.sh` to set broker auth, then copy the printed MQTT config into NEMO's MQTT settings.
-- **Connection timeout to localhost:1886**: Mosquitto may not be running, or NEMO is pointing at the wrong host. Start the broker (e.g. `vm_server/quick_restart.sh` or start Mosquitto manually) and ensure NEMO's broker host is correct. When VM server or mqtt_monitor starts, they print the current MQTT config for verification.
+- The NEMO Django app (nemo-ce-alex) must use the **same** broker, port, username, and password as `vm-server/config.env`. Set NEMO's MQTT settings to match: `MQTT_BROKER` (use the machine IP where Mosquitto runs, or `localhost` if NEMO and Mosquitto run on the same host), `MQTT_PORT=1886`, `MQTT_USERNAME` and `MQTT_PASSWORD` identical to config.env.
+- **Unauthorized (rc=5)**: Username/password in NEMO do not match the broker's password file. Re-run `vm-server/setup.sh` to set broker auth, then copy the printed MQTT config into NEMO's MQTT settings.
+- **Connection timeout to localhost:1886**: Mosquitto may not be running, or NEMO is pointing at the wrong host. Start the broker (e.g. `vm-server/quick_restart.sh` or start Mosquitto manually) and ensure NEMO's broker host is correct. When VM server or mqtt_monitor starts, they print the current MQTT config for verification.
 
 ### Network Issues
 **ESP32 can't reach server:**
@@ -219,7 +220,7 @@ Verification uses the same secret (UTF-8), hashes the `payload` string as-is (UT
 #### Setup Script (`setup.sh`)
 Complete system setup and configuration:
 ```bash
-cd vm_server
+cd vm-server
 ./setup.sh
 ```
 
@@ -232,7 +233,7 @@ cd vm_server
 #### Quick Restart Script (`quick_restart.sh`)
 Fast restart for development:
 ```bash
-cd vm_server
+cd vm-server
 ./quick_restart.sh
 ```
 
@@ -240,12 +241,12 @@ cd vm_server
 1. Stops all existing MQTT broker and server processes
 2. Clears MQTT ports (1883, 1886)
 3. Starts Mosquitto MQTT broker on both ports
-4. Starts the NEMO server (vm_server/main.py)
+4. Starts the NEMO server (vm-server/main.py)
 
 #### Test Script (`test_system.py`)
 Comprehensive system testing:
 ```bash
-cd vm_server
+cd vm-server
 python3 test_system.py
 ```
 
@@ -259,7 +260,7 @@ python3 test_system.py
 #### MQTT Monitor (`mqtt_monitor.py`)
 Real-time MQTT traffic monitoring:
 ```bash
-cd vm_server
+cd vm-server
 python3 mqtt_monitor.py
 ```
 
@@ -290,12 +291,12 @@ mosquitto_sub -h localhost -t "nemo/esp32/woollam/status" -v
 mosquitto_sub -h localhost -t "nemo/server/status" -v
 
 # Use the comprehensive monitor script
-cd vm_server
+cd vm-server
 python3 mqtt_monitor.py
 ```
 
 ### Log Files
-- **MQTT Broker:** `vm_server/mqtt/log/mosquitto.log`
+- **MQTT Broker:** `vm-server/mqtt/log/mosquitto.log`
 - **NEMO Server:** Console output or `nemo_server.log`
 - **ESP32:** Serial monitor output
 
@@ -311,7 +312,7 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 ## Project Structure
 
 ```
-├── vm_server/                    # Python server and configuration
+├── vm-server/                    # Python server and configuration
 │   ├── main.py                  # Main NEMO server application
 │   ├── setup.sh                 # Complete system setup script
 │   ├── quick_restart.sh         # Fast restart for development
@@ -325,12 +326,13 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 │   │   ├── data/               # Persistence data
 │   │   └── log/                # Log files
 │   └── venv/                   # Python virtual environment
-├── Display-Code/               # PlatformIO / ESP32 firmware
+├── display-firmware/               # PlatformIO / ESP32 firmware
 │   ├── src/main.cpp            # ESP32 firmware
 │   ├── src/config.h            # ESP32 configuration (single source)
 │   ├── include/lv_conf.h        # LVGL configuration
 │   ├── lib/                    # ESP32 libraries
 │   └── platformio.ini           # Build configuration
+├── tool-display-pcb/             # KiCad project, gerbers; backups/ holds zip snapshots
 └── README.md                   # This file
 ```
 
@@ -339,7 +341,7 @@ mosquitto_sub -h localhost -t "nemo/test" -v
 ### 🔒 **CRITICAL SECURITY REQUIREMENTS**
 
 1. **Never commit real credentials to version control:**
-   - WiFi SSID and password in `Display-Code/src/config.h`
+   - WiFi SSID and password in `display-firmware/src/config.h`
    - MQTT broker IP addresses
    - NEMO API tokens in `config.env`
    - Any other sensitive configuration

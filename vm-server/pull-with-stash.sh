@@ -1,6 +1,6 @@
 #!/bin/bash
 # Stash mosquitto config/data, pull latest from GitHub, then restore stash.
-# Run from repo root: ./vm_server/pull-with-stash.sh
+# Run from repo root: ./vm-server/pull-with-stash.sh
 
 set -e
 
@@ -12,12 +12,12 @@ GIT=(git -c "safe.directory=$REPO_ROOT")
 if "${GIT[@]}" ls-files -u | grep -q .; then
   echo "Resolving conflict (keeping your local mosquitto config and db)..."
   if "${GIT[@]}" ls-files -u | grep -q mosquitto.conf; then
-    "${GIT[@]}" checkout --theirs -- vm_server/mqtt/config/mosquitto.conf
-    "${GIT[@]}" add vm_server/mqtt/config/mosquitto.conf
+    "${GIT[@]}" checkout --theirs -- vm-server/mqtt/config/mosquitto.conf
+    "${GIT[@]}" add vm-server/mqtt/config/mosquitto.conf
   fi
   if "${GIT[@]}" ls-files -u | grep -q mosquitto.db; then
-    "${GIT[@]}" checkout --theirs -- vm_server/mqtt/data/mosquitto.db
-    "${GIT[@]}" add vm_server/mqtt/data/mosquitto.db
+    "${GIT[@]}" checkout --theirs -- vm-server/mqtt/data/mosquitto.db
+    "${GIT[@]}" add vm-server/mqtt/data/mosquitto.db
   fi
   echo "Done. Your mosquitto config is restored. You can commit or leave as-is."
   exit 0
@@ -29,7 +29,7 @@ echo "Stashing mosquitto config and data..."
 # fresh installs these paths may not exist yet, which would otherwise cause a
 # pathspec error ("Did you forget to 'git add'?").
 STASH_PATHS=()
-for f in vm_server/mqtt/config/mosquitto.conf vm_server/mqtt/data/mosquitto.db; do
+for f in vm-server/mqtt/config/mosquitto.conf vm-server/mqtt/data/mosquitto.db; do
   if "${GIT[@]}" ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
     STASH_PATHS+=("$f")
   fi
@@ -59,8 +59,8 @@ POP_EXIT=$?
 set -e
 if [ "$POP_EXIT" -ne 0 ]; then
   echo "Resolving binary conflict on mosquitto.db (keeping your local copy)..."
-  "${GIT[@]}" checkout --theirs -- vm_server/mqtt/data/mosquitto.db
-  "${GIT[@]}" add vm_server/mqtt/data/mosquitto.db
+  "${GIT[@]}" checkout --theirs -- vm-server/mqtt/data/mosquitto.db
+  "${GIT[@]}" add vm-server/mqtt/data/mosquitto.db
 fi
 
 echo "Done. Your mosquitto config is restored."

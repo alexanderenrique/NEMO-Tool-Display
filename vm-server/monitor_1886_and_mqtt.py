@@ -5,8 +5,8 @@ Combined monitor:
 - Streams only NON-localhost connection activity to Mosquitto listener port 1886
 
 This is intended to replace using both:
-  - vm_server/mqtt_monitor.py
-  - vm_server/watch_mosquitto_1886.sh (when you only care about non-local connections)
+  - vm-server/mqtt_monitor.py
+  - vm-server/watch_mosquitto_1886.sh (when you only care about non-local connections)
 """
 
 from __future__ import annotations

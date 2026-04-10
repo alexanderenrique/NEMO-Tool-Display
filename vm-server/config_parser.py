@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Configuration Parser for NEMO Tool Display
-Reads configuration from Display-Code/src/config.h to ensure consistency between ESP32 and VM server
+Reads display-firmware/src/config.h (or NEMO_CONFIG_H) for consistency between ESP32 and VM server.
 """
 
 import re
@@ -13,8 +13,16 @@ from dotenv import load_dotenv
 _CONFIG_ENV_LOADED: bool = False
 
 
+def _default_config_h_path() -> Path:
+    override = os.getenv("NEMO_CONFIG_H", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    script_dir = Path(__file__).resolve().parent
+    return script_dir.parent / "display-firmware" / "src" / "config.h"
+
+
 def load_config_env() -> None:
-    """Load vm_server/config.env once (same directory as this module). Idempotent."""
+    """Load vm-server/config.env once (same directory as this module). Idempotent."""
     global _CONFIG_ENV_LOADED
     if _CONFIG_ENV_LOADED:
         return
@@ -32,14 +40,12 @@ def load_config_env() -> None:
     _CONFIG_ENV_LOADED = True
 
 class ConfigParser:
-    """Parse configuration from Display-Code/src/config.h file"""
-    
+    """Parse configuration from display-firmware/src/config.h (or path from NEMO_CONFIG_H)."""
+
     def __init__(self, config_h_path=None):
         if config_h_path is None:
-            # Default to Display-Code/src/config.h relative to repo root
-            script_dir = Path(__file__).parent
-            config_h_path = script_dir.parent / "Display-Code" / "src" / "config.h"
-        
+            config_h_path = _default_config_h_path()
+
         self.config_h_path = Path(config_h_path)
         self._config = {}
         self._parse_config()

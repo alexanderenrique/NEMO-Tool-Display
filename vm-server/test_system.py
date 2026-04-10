@@ -390,7 +390,7 @@ def test_system_processes():
                 print_error(f"{process_name}: Not running")
                 if process_name == "NEMO Server":
                     print_info(
-                        "Start from vm_server with config.env present: "
+                        "Start from vm-server with config.env present: "
                         "source venv/bin/activate && python3 main.py "
                         "(main.py now loads config.env beside the script, not the shell cwd.)"
                     )

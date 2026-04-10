@@ -20,6 +20,7 @@ pio device monitor
 |--------|-------------|
 | `pio run -t clean` | Remove build artifacts (`.pio/build/`) for current env |
 | `pio run -t fullclean` | Deep clean (build dirs + tool cache for this project) |
+| `pio run -t compiledb` | Regenerate `compile_commands.json` for clangd / IDE (file is gitignored) |
 
 ## Device & monitor
 

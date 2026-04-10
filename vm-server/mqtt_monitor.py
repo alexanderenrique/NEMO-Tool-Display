@@ -25,7 +25,7 @@ LOADED_CONFIG_ENV_PATH: Optional[str] = None
 
 
 def load_environment():
-    """Load vm_server/config.env (next to this script). Falls back to cwd .env via load_dotenv()."""
+    """Load vm-server/config.env (next to this script). Falls back to cwd .env via load_dotenv()."""
     global LOADED_CONFIG_ENV_PATH
     script_dir = Path(__file__).resolve().parent
     env_path = script_dir / "config.env"
