@@ -1,11 +1,11 @@
 # NEMO Tool Display — run main.py under systemd so it survives SSH disconnect and
 # restarts automatically after crashes.
 #
-# Install (Linux VM):
-#   1. Edit NEMO_VM_SERVER_DIR below (one line). Optionally uncomment User=/Group= for non-root.
-#   2. sudo cp systemd/nemo-vm-server.service /etc/systemd/system/
-#   3. sudo systemctl daemon-reload
-#   4. sudo systemctl enable --now nemo-vm-server.service
+# Install (Linux VM, no path edits in this file):
+#   cd /path/to/vm_server
+#   sudo ln -sf "$PWD/systemd/run-nemo-vm-server.sh" /etc/systemd/system/nemo-vm-server-exec.sh
+#   sudo ln -sf "$PWD/systemd/nemo-vm-server.service" /etc/systemd/system/nemo-vm-server.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now nemo-vm-server.service
 #
 # Stop / start:
 #   sudo systemctl stop nemo-vm-server.service
@@ -23,11 +23,10 @@ Requires=nemo-mosquitto.service
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-Environment=NEMO_VM_SERVER_DIR=CHANGE_ME_VM_SERVER_DIR
 # If you see status=217/USER, User=/Group= referred to a missing account — fix or leave commented for root.
 # User=ubuntu
 # Group=ubuntu
-ExecStart=/bin/sh -c 'cd "${NEMO_VM_SERVER_DIR}" && exec ./venv/bin/python3 ./main.py'
+ExecStart=/etc/systemd/system/nemo-vm-server-exec.sh
 Restart=on-failure
 RestartSec=5
 

@@ -1,10 +1,14 @@
 # NEMO Tool Display — Mosquitto using this repo's mqtt/config/mosquitto.conf
 # Run in foreground (no -d) so systemd supervises the process.
 #
-# Install: same steps as nemo-vm-server.service (copy, edit ONE path below, daemon-reload, enable --now).
+# Install (no path edits in this file): symlink the runner script, then this unit, from your checkout.
+#   cd /path/to/vm_server
+#   sudo ln -sf "$PWD/systemd/run-nemo-mosquitto.sh" /etc/systemd/system/nemo-mosquitto-exec.sh
+#   sudo ln -sf "$PWD/systemd/nemo-mosquitto.service" /etc/systemd/system/nemo-mosquitto.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now nemo-mosquitto.service
 #
-# Why cd + relative -c: mqtt/config/mosquitto.conf uses paths relative to vm_server (mqtt/data, mqtt/log, etc.).
-# User=/Group=: optional. Omit both (as below) to run as root for a quick setup; set to your deploy user in production.
+# The script finds vm_server from its real path (repo may be named NEMO-Tool-Display or anything).
+# User=/Group=: optional — add under [Service] for non-root. Override broker: Environment=MOSQUITTO_BIN=/path/to/mosquitto
 
 [Unit]
 Description=NEMO Mosquitto (custom config in vm_server)
@@ -14,9 +18,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=NEMO_VM_SERVER_DIR=CHANGE_ME_VM_SERVER_DIR
 # Foreground mode — do not pass -d
-ExecStart=/bin/sh -c 'cd "${NEMO_VM_SERVER_DIR}" && exec /usr/sbin/mosquitto -c mqtt/config/mosquitto.conf'
+ExecStart=/etc/systemd/system/nemo-mosquitto-exec.sh
 Restart=on-failure
 RestartSec=5
 

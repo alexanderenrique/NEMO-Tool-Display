@@ -2,7 +2,7 @@
 
 Use this on your Linux VM so the MQTT broker and NEMO server **start at boot** and **restart after crashes or power loss** (once the machine is back up).
 
-Replace **`CHANGE_ME_VM_SERVER_DIR`** in **both** unit files with the absolute path to your `vm_server` directory (the folder that contains `main.py`, `venv/`, `mqtt/`, and `config.env`). In each file that is the single `Environment=NEMO_VM_SERVER_DIR=...` line. **`User=` / `Group=` are optional** on both services (omit or leave commented for root; set them for production least-privilege).
+**No path placeholders in the unit files:** install with **`ln -sf`** from your checkout (see step 3). Runner scripts resolve `vm_server` from their own location, so the repo folder can be named `NEMO-Tool-Display` or anything else. **`User=` / `Group=` are optional** on both services (omit or leave commented for root; set them for production least-privilege).
 
 ---
 
@@ -12,11 +12,11 @@ Replace **`CHANGE_ME_VM_SERVER_DIR`** in **both** unit files with the absolute p
    ```bash
    sudo apt-get update && sudo apt-get install -y mosquitto mosquitto-clients
    ```
-2. **Confirm the broker binary path** (systemd unit uses `/usr/sbin/mosquitto`). If yours differs:
+2. **Confirm the broker binary path** (default in `systemd/run-nemo-mosquitto.sh` is `/usr/sbin/mosquitto`). If yours differs:
    ```bash
    command -v mosquitto
    ```
-   Edit `ExecStart` in `nemo-mosquitto.service` if the path is not `/usr/sbin/mosquitto`.
+   Add `Environment=MOSQUITTO_BIN=…` under `[Service]` in `nemo-mosquitto.service` (use the path from `command -v`), or edit `MOSQUITTO_BIN` in `systemd/run-nemo-mosquitto.sh`.
 3. **Finish app setup** from `vm_server` (venv, `config.env`, passwords, etc.) using `./setup.sh` or your usual process so `mqtt/config/mosquitto.conf` and `mqtt/config/passwd` exist and are valid.
 4. **Permissions**: if you set `User=` / `Group=` on `nemo-mosquitto.service`, that account must read `mqtt/config/passwd` and read/write `mqtt/data/` and `mqtt/log/`. Fix ownership if needed:
    ```bash
@@ -45,20 +45,20 @@ To undo later: `sudo systemctl unmask mosquitto`.
 
 ## 3. Install custom unit files
 
-From your checkout (paths adjusted):
+From your checkout, **`cd` into `vm_server`** and **symlink** (not copy) the runner scripts and units so systemd runs the real files in your tree—no manual path edits.
 
 ```bash
 cd /path/to/vm_server
 
-# Edit CHANGE_ME_VM_SERVER_DIR in both files (Environment=NEMO_VM_SERVER_DIR=...); optional User=/Group= on vm-server
-nano systemd/nemo-mosquitto.service
-nano systemd/nemo-vm-server.service
-
-sudo cp systemd/nemo-mosquitto.service /etc/systemd/system/
-sudo cp systemd/nemo-vm-server.service /etc/systemd/system/
+sudo ln -sf "$PWD/systemd/run-nemo-mosquitto.sh" /etc/systemd/system/nemo-mosquitto-exec.sh
+sudo ln -sf "$PWD/systemd/run-nemo-vm-server.sh" /etc/systemd/system/nemo-vm-server-exec.sh
+sudo ln -sf "$PWD/systemd/nemo-mosquitto.service" /etc/systemd/system/nemo-mosquitto.service
+sudo ln -sf "$PWD/systemd/nemo-vm-server.service" /etc/systemd/system/nemo-vm-server.service
 
 sudo systemctl daemon-reload
 ```
+
+If you **copy** the `.sh` files into `/etc/systemd/system/` instead of symlinking, they will **not** find `vm_server` (the script’s parent directory must be `vm_server/systemd/` inside the checkout).
 
 ---
 
@@ -108,7 +108,7 @@ Common issues:
 
 - **Ports in use**: something else (including old `mosquitto.service`) still bound to 1883/1886—finish step 2 and reboot once.
 - **Permission denied** on `passwd` or `mqtt/data`: fix `chown`/`chmod` for your service user.
-- **Wrong `WorkingDirectory`**: `mosquitto.conf` uses paths relative to `vm_server`; `WorkingDirectory` must be that directory.
+- **Wrong cwd / paths**: `mosquitto.conf` uses paths relative to `vm_server`. Use the **symlink** install for the runner scripts so they `cd` to the correct `vm_server`.
 
 ---
 
