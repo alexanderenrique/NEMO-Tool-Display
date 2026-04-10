@@ -17,7 +17,7 @@ Use this on your Linux VM so the MQTT broker and NEMO server **start at boot** a
    command -v mosquitto
    ```
    Add `Environment=MOSQUITTO_BIN=…` under `[Service]` in `nemo-mosquitto.service` (use the path from `command -v`), or edit `MOSQUITTO_BIN` in `systemd/run-nemo-mosquitto.sh`.
-3. **Finish app setup** from `vm_server` (venv, `config.env`, passwords, etc.) using `./setup.sh` or your usual process so `mqtt/config/mosquitto.conf` and `mqtt/config/passwd` exist and are valid.
+3. **Finish app setup** from `vm_server` (venv, `config.env`, passwords, etc.) using `./setup.sh` or your usual process so `mqtt/config/mosquitto.conf` and `mqtt/config/passwd` exist and are valid. **`mosquitto.conf` is gitignored**—a clone has only `mosquitto.conf.example` until you run setup or copy it; without the real file, `nemo-mosquitto` will refuse to start with a clear error.
 4. **Permissions**: if you set `User=` / `Group=` on `nemo-mosquitto.service`, that account must read `mqtt/config/passwd` and read/write `mqtt/data/` and `mqtt/log/`. Fix ownership if needed:
    ```bash
    sudo chown -R YOUR_USER:YOUR_GROUP /path/to/vm_server/mqtt
@@ -70,9 +70,10 @@ Start **Mosquitto first**, then the Python server (`nemo-vm-server` already **Re
 
 ```bash
 sudo systemctl enable nemo-mosquitto.service
-sudo systemctl enable nemo-vm-server.service
-
 sudo systemctl start nemo-mosquitto.service
+
+
+sudo systemctl enable nemo-vm-server.service
 sudo systemctl start nemo-vm-server.service
 ```
 
