@@ -58,7 +58,9 @@ sudo ln -sf "$PWD/systemd/nemo-vm-server.service" /etc/systemd/system/nemo-vm-se
 sudo systemctl daemon-reload
 ```
 
-If you **copy** the `.sh` files into `/etc/systemd/system/` instead of symlinking, they will **not** find `vm_server` (the script’s parent directory must be `vm_server/systemd/` inside the checkout).
+If you **copy** the `.sh` files into `/etc/systemd/system/` instead of symlinking, path discovery cannot reach your checkout. Either **use symlinks** as above, or add to **both** units under `[Service]`:
+
+`Environment=NEMO_VM_SERVER_DIR=/absolute/path/to/vm_server`
 
 ---
 

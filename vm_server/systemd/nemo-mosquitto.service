@@ -8,7 +8,8 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now nemo-mosquitto.service
 #
 # The script finds vm_server from its real path (repo may be named NEMO-Tool-Display or anything).
-# User=/Group=: optional — add under [Service] for non-root. Override broker: Environment=MOSQUITTO_BIN=/path/to/mosquitto
+# User=/Group=: optional — add under [Service] for non-root.
+# Overrides: Environment=MOSQUITTO_BIN=…   or   Environment=NEMO_VM_SERVER_DIR=/path/to/vm_server (if exec script is not under vm_server/systemd/)
 
 [Unit]
 Description=NEMO Mosquitto (custom config in vm_server)

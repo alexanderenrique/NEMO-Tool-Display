@@ -7,6 +7,8 @@
 #   sudo ln -sf "$PWD/systemd/nemo-vm-server.service" /etc/systemd/system/nemo-vm-server.service
 #   sudo systemctl daemon-reload && sudo systemctl enable --now nemo-vm-server.service
 #
+# If the exec script lives outside the repo tree, set: Environment=NEMO_VM_SERVER_DIR=/path/to/vm_server
+#
 # Stop / start:
 #   sudo systemctl stop nemo-vm-server.service
 #   sudo systemctl start nemo-vm-server.service
