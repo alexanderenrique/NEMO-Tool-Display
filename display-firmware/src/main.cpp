@@ -399,13 +399,13 @@ void create_simple_ui() {
   lv_label_set_text(user_label, "User");
   lv_obj_set_style_text_font(user_label, labelFont, 0);
   lv_obj_set_style_text_color(user_label, lv_color_hex(textColor), 0);
-  lv_obj_align(user_label, LV_ALIGN_TOP_LEFT, 0, 55);
+  lv_obj_align(user_label, LV_ALIGN_TOP_LEFT, 0, 65);
 
   user_value = lv_label_create(status_indicator);
   lv_label_set_text(user_value, "--");
   lv_obj_set_style_text_font(user_value, valueFont, 0);
   lv_obj_set_style_text_color(user_value, lv_color_hex(textColor), 0);
-  lv_obj_align(user_value, LV_ALIGN_TOP_LEFT, 0, 72);
+  lv_obj_align(user_value, LV_ALIGN_TOP_LEFT, 0, 82);
 
   time_label = lv_label_create(status_indicator);
   lv_label_set_text(time_label, "Enabled/Disabled Since");
@@ -559,7 +559,7 @@ void connectMQTT() {
     Serial.println(mqtt_port);
 
     Serial.print("Client ID: ");
-    Serial.println(mqtt_client_id);
+    Serial.println(mqtt_client_id.c_str());
 
     bool useCreds = (mqtt_username && mqtt_username[0] != '\0' && mqtt_password && mqtt_password[0] != '\0');
     Serial.print("Auth mode: ");
@@ -589,9 +589,9 @@ void connectMQTT() {
 
     unsigned long t0 = millis();
     if (useCreds) {
-      connected = mqttClient.connect(mqtt_client_id, mqtt_username, mqtt_password);
+      connected = mqttClient.connect(mqtt_client_id.c_str(), mqtt_username, mqtt_password);
     } else {
-      connected = mqttClient.connect(mqtt_client_id);
+      connected = mqttClient.connect(mqtt_client_id.c_str());
     }
     unsigned long elapsed = millis() - t0;
 
@@ -600,7 +600,7 @@ void connectMQTT() {
       Serial.print(elapsed);
       Serial.println(" ms)");
       Serial.print("Client ID: ");
-      Serial.println(mqtt_client_id);
+      Serial.println(mqtt_client_id.c_str());
       Serial.print("Broker: ");
       Serial.print(mqtt_broker);
       Serial.print(":");
