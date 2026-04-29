@@ -55,6 +55,13 @@ logs/
 # MQTT data (under vm-server)
 vm-server/mqtt/data/
 vm-server/mqtt/log/
+vm-server/user_directory_cache.json
+
+# API data (under vm-server/API/data)
+vm-server/API/data/
+# Local allowlist (copy from mqtt_reservation_tools.example.yaml)
+vm-server/mqtt_reservation_tools.yaml
+vm-server/mqtt_reservation_tools.csv
 
 # MQTT broker secrets and local config
 vm-server/mqtt/certs/

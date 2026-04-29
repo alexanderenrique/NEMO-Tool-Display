@@ -25,13 +25,48 @@ from typing import Dict, List, Optional, Tuple
 
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
-from config_parser import get_mqtt_ports, get_esp32_port, get_nemo_port, get_mqtt_broker
+from config_parser import (
+    get_esp32_port,
+    get_mqtt_broker,
+    get_nemo_port,
+    get_topic_prefix_str,
+)
+from nemo_helpers import (
+    api_auth_headers,
+    fetch_reservations_list,
+    load_user_directory_cache,
+    pick_next_reservation_for_tool,
+    refresh_user_directory,
+    seconds_until_midnight_local,
+)
+from reservation_allowlist import load_allowed_tool_ids
 
 # Always resolve next to this script (systemd/cron/other cwd must not break config)
 _VM_SERVER_DIR = Path(__file__).resolve().parent
 _CONFIG_ENV_PATH = _VM_SERVER_DIR / "config.env"
 _NEMO_LOG_FILE = _VM_SERVER_DIR / "nemo_server.log"
-load_dotenv(_CONFIG_ENV_PATH)
+_USER_CACHE_PATH = _VM_SERVER_DIR / "user_directory_cache.json"
+_LEGACY_DOTENV_PATH = _VM_SERVER_DIR / ".env"
+
+
+def _load_vm_server_environment_files() -> None:
+    """Single source of truth: ``vm-server/config.env``.
+
+    Legacy: if ``vm-server/.env`` exists and ``config.env`` does not, load ``.env`` once and log a deprecation notice.
+    """
+    if _CONFIG_ENV_PATH.is_file():
+        load_dotenv(_CONFIG_ENV_PATH)
+        return
+    if _LEGACY_DOTENV_PATH.is_file():
+        print(
+            "WARNING: vm-server/config.env not found — loaded vm-server/.env (deprecated). "
+            "Merge into vm-server/config.env and remove vm-server/.env",
+            file=sys.stderr,
+        )
+        load_dotenv(_LEGACY_DOTENV_PATH)
+
+
+_load_vm_server_environment_files()
 
 # Configuration validation and loading
 def load_config():
@@ -66,7 +101,41 @@ def load_config():
     
     if config['max_name_length'] < 1 or config['max_name_length'] > 50:
         raise ValueError("MAX_NAME_LENGTH must be between 1 and 50")
-    
+
+    # NEMO HTTPS API (optional; omit NEMO_API_TOKEN and NEMO_TOKEN to disable)
+    config["nemo_api_base_url"] = os.getenv(
+        "NEMO_API_BASE_URL", "https://nemo.stanford.edu/api"
+    ).strip().rstrip("/")
+    config["nemo_api_token"] = (
+        os.getenv("NEMO_API_TOKEN", "").strip() or os.getenv("NEMO_TOKEN", "").strip()
+    )
+    scheme = os.getenv("NEMO_API_AUTH_SCHEME", "Token").strip()
+    config["nemo_api_auth_scheme"] = scheme or "Token"
+    config["nemo_reservations_poll_seconds"] = int(
+        os.getenv("NEMO_RESERVATIONS_POLL_SECONDS", "900")
+    )
+    config["nemo_reservations_lookahead_days"] = int(
+        os.getenv("NEMO_RESERVATIONS_LOOKAHEAD_DAYS", "7")
+    )
+    if config["nemo_reservations_poll_seconds"] < 60:
+        raise ValueError("NEMO_RESERVATIONS_POLL_SECONDS must be >= 60")
+    if (
+        config["nemo_reservations_lookahead_days"] < 1
+        or config["nemo_reservations_lookahead_days"] > 366
+    ):
+        raise ValueError("NEMO_RESERVATIONS_LOOKAHEAD_DAYS must be between 1 and 366")
+
+    raw_allow = os.getenv("MQTT_RESERVATION_TOOLS_FILE", "").strip().strip('"').strip("'")
+    if raw_allow:
+        p = Path(raw_allow).expanduser()
+        config["mqtt_reservation_tools_path"] = (
+            p.resolve() if p.is_absolute() else (_VM_SERVER_DIR / p).resolve()
+        )
+    else:
+        config["mqtt_reservation_tools_path"] = (
+            _VM_SERVER_DIR / "mqtt_reservation_tools.yaml"
+        ).resolve()
+
     return config
 
 # Load configuration
@@ -155,6 +224,8 @@ class NEMOToolServer:
         self.mqtt_client_esp32 = None  # Client for publishing to ESP32s on port 1883
         self.running = False
         self._rx_counter = itertools.count(1)  # Monotonic trace id for inbound message flow
+        self.user_cache_path = _USER_CACHE_PATH
+        self.user_directory: Dict[int, str] = load_user_directory_cache(self.user_cache_path)
 
     async def init_mqtt(self):
         """Initialize MQTT clients: one for receiving from NEMO (1886), one for publishing to ESP32s (1883)"""
@@ -966,8 +1037,116 @@ class NEMOToolServer:
                 
         except Exception as e:
             logger.error(f"{trace_prefix}Error processing overall status: {e}")
-    
-    
+
+    async def nemo_prepare_user_cache_on_startup(self) -> None:
+        """If HTTP API token is configured and cache file missing, refresh lab member directory."""
+        tok = (self.config.get("nemo_api_token") or "").strip()
+        if not tok:
+            return
+        if self.user_cache_path.exists():
+            return
+        hdr = api_auth_headers(tok, self.config.get("nemo_api_auth_scheme", "Token"))
+        logger.info(
+            "User directory cache missing (%s); running initial full sync",
+            self.user_cache_path,
+        )
+        try:
+
+            def _refresh() -> Dict[int, str]:
+                return refresh_user_directory(
+                    self.config["nemo_api_base_url"],
+                    hdr,
+                    self.user_cache_path,
+                    logger,
+                )
+
+            self.user_directory = await asyncio.to_thread(_refresh)
+        except Exception:
+            logger.exception("Initial lab member directory sync failed")
+
+    async def nemo_user_midnight_loop(self) -> None:
+        """Daily full sync at local midnight."""
+        tok = (self.config.get("nemo_api_token") or "").strip()
+        if not tok:
+            return
+        while self.running:
+            try:
+                delay = seconds_until_midnight_local()
+                logger.debug("User directory next sync in %.0f s", delay)
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                break
+            if not self.running:
+                break
+            hdr = api_auth_headers(tok, self.config.get("nemo_api_auth_scheme", "Token"))
+            logger.info("Running scheduled lab member directory sync (midnight)")
+            try:
+
+                def _refresh() -> Dict[int, str]:
+                    return refresh_user_directory(
+                        self.config["nemo_api_base_url"],
+                        hdr,
+                        self.user_cache_path,
+                        logger,
+                    )
+
+                self.user_directory = await asyncio.to_thread(_refresh)
+            except Exception:
+                logger.exception("Scheduled lab member directory sync failed")
+
+    async def nemo_publish_per_tool_next_reservations(self) -> None:
+        """Fetch reservations once; publish ``{prefix}/<tool_id>/next_reservation`` only for tool IDs in the allowlist file."""
+        tok = (self.config.get("nemo_api_token") or "").strip()
+        if not tok:
+            return
+
+        allow_path = self.config.get("mqtt_reservation_tools_path")
+        allow_ids = load_allowed_tool_ids(allow_path, logger)
+        if not allow_ids:
+            return
+
+        hdr = api_auth_headers(tok, self.config.get("nemo_api_auth_scheme", "Token"))
+        try:
+
+            def _fetch() -> List:
+                return fetch_reservations_list(logger, self.config["nemo_api_base_url"], hdr)
+
+            reservations = await asyncio.to_thread(_fetch)
+        except Exception:
+            logger.exception("Failed to fetch /reservations/ for per-tool next_reservation MQTT")
+            return
+
+        lad = int(self.config.get("nemo_reservations_lookahead_days", 7))
+        tz_o = int(self.config.get("timezone_offset_hours", -7))
+        user_map = dict(self.user_directory)
+        prefix = get_topic_prefix_str()
+
+        for tool_id in allow_ids:
+            payload = pick_next_reservation_for_tool(
+                reservations,
+                tool_id,
+                lad,
+                tz_o,
+                user_map,
+                f"Tool {tool_id}",
+            )
+            topic = f"{prefix}/{tool_id}/next_reservation"
+            body = json.dumps(payload, ensure_ascii=False)
+            self._publish_to_esp32(topic, body, f"next_reservation_tool_{tool_id}")
+
+    async def nemo_reservation_poll_loop(self) -> None:
+        """Poll every NEMO_RESERVATIONS_POLL_SECONDS (default 900)."""
+        tok = (self.config.get("nemo_api_token") or "").strip()
+        if not tok:
+            return
+        interval = int(self.config.get("nemo_reservations_poll_seconds", 900))
+        while self.running:
+            try:
+                await self.nemo_publish_per_tool_next_reservations()
+            except Exception:
+                logger.exception("Reservation poll iteration failed")
+            await asyncio.sleep(interval)
+
     async def start(self) -> str:
         """Start the server. Returns 'clean' on normal stop (SIGINT/SIGTERM or shutdown flag),
         'error' if the run loop or MQTT init failed so a supervisor can restart the process."""
@@ -995,6 +1174,13 @@ class NEMOToolServer:
 
             self.running = True
             logger.info("Server ready — NEMO (1886) → ESP32 (1883)")
+
+            if (self.config.get("nemo_api_token") or "").strip():
+                await self.nemo_prepare_user_cache_on_startup()
+                asyncio.create_task(self.nemo_user_midnight_loop())
+                asyncio.create_task(self.nemo_reservation_poll_loop())
+            else:
+                logger.info("NEMO_API_TOKEN not set — NEMO HTTPS user sync + reservation polling disabled")
 
             # Start connection status monitor
             asyncio.create_task(self.connection_status_monitor())
@@ -1032,12 +1218,19 @@ class NEMOToolServer:
 
 
 def validate_environment():
-    """Validate that all required files and dependencies are present"""
-    if not _CONFIG_ENV_PATH.is_file():
-        logger.error(f"Missing required file: {_CONFIG_ENV_PATH}")
-        logger.error("Please ensure config.env exists beside main.py before starting the server")
-        return False
-    return True
+    """Validate that a VM env file is present (``config.env`` preferred; ``.env`` legacy)."""
+    if _CONFIG_ENV_PATH.is_file():
+        return True
+    if _LEGACY_DOTENV_PATH.is_file():
+        logger.warning(
+            "Using legacy vm-server/.env — create vm-server/config.env and migrate (single source of truth)"
+        )
+        return True
+    logger.error(f"Missing required file: {_CONFIG_ENV_PATH} (no legacy {_LEGACY_DOTENV_PATH} either)")
+    logger.error(
+        "Create vm-server/config.env from vm-server/config.env.example beside main.py before starting the server"
+    )
+    return False
 
 
 async def main():

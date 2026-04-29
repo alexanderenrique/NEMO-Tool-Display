@@ -22,21 +22,31 @@ def _default_config_h_path() -> Path:
 
 
 def load_config_env() -> None:
-    """Load vm-server/config.env once (same directory as this module). Idempotent."""
+    """Load vm-server/config.env once (same directory as this module). Idempotent.
+
+    Mirrors main.py resolution: ``config.env`` is canonical; ``.env`` is legacy fallback.
+    """
     global _CONFIG_ENV_LOADED
     if _CONFIG_ENV_LOADED:
         return
-    env_path = Path(__file__).resolve().parent / "config.env"
+    base = Path(__file__).resolve().parent
+    env_path = base / "config.env"
+    legacy_dotenv = base / ".env"
     if env_path.is_file():
-        if os.access(env_path, os.R_OK):
-            try:
+        try:
+            if os.access(env_path, os.R_OK):
                 load_dotenv(env_path)
-            except PermissionError:
+            else:
                 load_dotenv()
-        else:
+        except PermissionError:
             load_dotenv()
-    else:
-        load_dotenv()
+        _CONFIG_ENV_LOADED = True
+        return
+    if legacy_dotenv.is_file():
+        load_dotenv(legacy_dotenv)
+        _CONFIG_ENV_LOADED = True
+        return
+    load_dotenv()
     _CONFIG_ENV_LOADED = True
 
 class ConfigParser:
@@ -140,6 +150,45 @@ def get_mqtt_broker():
     if val is not None and str(val).strip() != "":
         return str(val).strip().strip('"').strip("'")
     return config.get("MQTT_BROKER", "localhost")
+
+
+def get_target_tool_id() -> int:
+    """Display ``TARGET_TOOL_ID`` from firmware config (optional env overrides). Not used by the VM MQTT bridge for reservations (broadcast-only)."""
+    load_config_env()
+    val = os.getenv("NEMO_TOOL_ID") or os.getenv("TARGET_TOOL_ID")
+    if val is not None and str(val).strip() != "":
+        try:
+            return int(str(val).strip())
+        except ValueError:
+            pass
+    tid = config.get("TARGET_TOOL_ID")
+    if isinstance(tid, int):
+        return tid
+    if tid is not None:
+        try:
+            return int(str(tid).strip())
+        except (ValueError, TypeError):
+            pass
+    return 0
+
+
+def get_target_tool_name() -> str:
+    """Display ``TARGET_TOOL_NAME`` from firmware config (optional env overrides). Not used by the VM MQTT bridge for reservations (broadcast-only)."""
+    load_config_env()
+    val = os.getenv("NEMO_TOOL_NAME")
+    if val is not None and str(val).strip() != "":
+        return str(val).strip().strip('"').strip("'")
+    name = config.get("TARGET_TOOL_NAME")
+    return str(name) if name else ""
+
+
+def get_topic_prefix_str() -> str:
+    """MQTT topic prefix without trailing slash."""
+    load_config_env()
+    val = os.getenv("MQTT_TOPIC_PREFIX")
+    if val is not None and str(val).strip() != "":
+        return str(val).strip().strip('"').strip("'").strip("/")
+    return str(config.get("MQTT_TOPIC_PREFIX", "nemo/esp32")).strip().strip("/")
 
 if __name__ == "__main__":
     # Test the parser

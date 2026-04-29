@@ -2,7 +2,7 @@
 
 Use this on your Linux VM so the MQTT broker and NEMO server **start at boot** and **restart after crashes or power loss** (once the machine is back up).
 
-**Paths live in the unit files:** open `systemd/nemo-mosquitto.service` and `systemd/nemo-vm-server.service`, set `NEMO_VM_SERVER_DIR` to the absolute path of your `vm-server` directory, and set `MOSQUITTO_BIN` if `mosquitto` is not at `/usr/sbin/mosquitto`. **`User=` / `Group=` are optional** on both services (omit or leave commented for root; set them for production least-privilege).
+**Paths live in the unit files:** open `systemd/nemo-mosquitto.service`, `systemd/nemo-vm-server.service`, and `systemd/nemo-api-sync.service`, set `NEMO_VM_SERVER_DIR` to the absolute path of your `vm-server` directory, and set `MOSQUITTO_BIN` if `mosquitto` is not at `/usr/sbin/mosquitto`. **`User=` / `Group=` are optional** on all services (omit or leave commented for root; set them for production least-privilege).
 
 ---
 
@@ -48,12 +48,13 @@ To undo later: `sudo systemctl unmask mosquitto`.
 
 ## 3. Install custom unit files
 
-1. Edit **`Environment=NEMO_VM_SERVER_DIR=...`** (and **`MOSQUITTO_BIN=...`** if needed) in both files under `vm-server/systemd/`.
+1. Edit **`Environment=NEMO_VM_SERVER_DIR=...`** (and **`MOSQUITTO_BIN=...`** if needed) in the unit files under `vm-server/systemd/`.
 2. Copy (or symlink) the units into `/etc/systemd/system/`:
 
 ```bash
 sudo cp /opt/NEMO-Tool-Display/vm-server/systemd/nemo-mosquitto.service /etc/systemd/system/
 sudo cp /opt/NEMO-Tool-Display/vm-server/systemd/nemo-vm-server.service /etc/systemd/system/
+sudo cp /opt/NEMO-Tool-Display/vm-server/systemd/nemo-api-sync.service /etc/systemd/system/
 
 sudo systemctl daemon-reload
 ```
@@ -73,6 +74,10 @@ sudo systemctl start nemo-mosquitto.service
 
 sudo systemctl enable nemo-vm-server.service
 sudo systemctl start nemo-vm-server.service
+
+
+sudo systemctl enable nemo-api-sync.service
+sudo systemctl start nemo-api-sync.service
 ```
 
 Check status:
@@ -80,6 +85,7 @@ Check status:
 ```bash
 systemctl status nemo-mosquitto.service
 systemctl status nemo-vm-server.service
+systemctl status nemo-api-sync.service
 ```
 
 ---
@@ -91,7 +97,7 @@ If both units are **enabled**, they start automatically when networking is up. V
 ```bash
 sudo reboot
 # after login:
-systemctl is-active nemo-mosquitto.service nemo-vm-server.service
+systemctl is-active nemo-mosquitto.service nemo-vm-server.service nemo-api-sync.service
 ```
 
 ---
@@ -104,6 +110,7 @@ systemctl is-active nemo-mosquitto.service nemo-vm-server.service
 | Mosquitto (file) | `vm-server/mqtt/log/mosquitto.log` |
 | `main.py` (systemd) | `journalctl -u nemo-vm-server.service -f` |
 | `main.py` (app log) | `vm-server/nemo_server.log` |
+| API sync + next reservations (systemd) | `journalctl -u nemo-api-sync.service -f` |
 
 Common issues:
 

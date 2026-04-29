@@ -1,0 +1,38 @@
+# NEMO Tool Display — always-on API sync + next_reservation publisher
+#
+# Runs:
+#   vm-server/run_api_sync_and_publish_loop.py
+#
+# This refreshes API JSON snapshots on a schedule (15-minute reservations; nightly user/tool lookups)
+# then publishes per-tool retained MQTT topics:
+#   {MQTT_TOPIC_PREFIX}/{tool_id}/next_reservation
+#
+# 1. Set the same absolute vm-server path in Environment=, WorkingDirectory=, and ExecStart=
+#    (systemd does not expand ${VAR} in WorkingDirectory=/ExecStart=).
+# 2. Install the unit and reload:
+#      sudo cp /path/to/vm-server/systemd/nemo-api-sync.service /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now nemo-api-sync.service
+#
+# Logs:
+#   journalctl -u nemo-api-sync.service -f
+#
+[Unit]
+Description=NEMO API sync + next reservation MQTT publisher
+After=network-online.target nemo-mosquitto.service
+Wants=network-online.target
+Requires=nemo-mosquitto.service
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+Environment=NEMO_VM_SERVER_DIR=/opt/NEMO-Tool-Display/vm-server
+WorkingDirectory=/opt/NEMO-Tool-Display/vm-server
+ExecStart=/opt/NEMO-Tool-Display/vm-server/venv/bin/python3 /opt/NEMO-Tool-Display/vm-server/run_api_sync_and_publish_loop.py
+Restart=on-failure
+RestartSec=5
+# User=ubuntu
+# Group=ubuntu
+
+[Install]
+WantedBy=multi-user.target
+

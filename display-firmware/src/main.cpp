@@ -17,6 +17,7 @@
 String mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/status";
 String mqtt_topic_operational = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/operational";
 String mqtt_topic_task = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/task";
+String mqtt_topic_next_reservation = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/next_reservation";
 String mqtt_topic_overall = String(MQTT_TOPIC_PREFIX) + "/overall";
 
 // State: tool_operational from .../operational only; task topic updates task store + UI copy only
@@ -76,7 +77,24 @@ lv_obj_t *details_container = nullptr;   // Details screen (problem description)
 lv_obj_t *btn_forward = nullptr;         // Arrow lower-right: go to Details
 lv_obj_t *btn_back = nullptr;           // Arrow on Details: back to Status
 
+// Next reservation page (per-tool topic .../<TARGET_TOOL_ID>/next_reservation)
+lv_obj_t *btn_main_to_reservation = nullptr; // Blue left: main → reservation page
+lv_obj_t *reservation_container = nullptr;
+lv_obj_t *btn_reservation_back = nullptr;       // Blue right: reservation → main
+lv_obj_t *res_title_label = nullptr;
+lv_obj_t *res_next_row_lbl = nullptr;
+lv_obj_t *res_next_row_val = nullptr;
+lv_obj_t *res_time_row_lbl = nullptr;
+lv_obj_t *res_time_row_val = nullptr;
+lv_obj_t *res_empty_label = nullptr;
+bool reservation_has_booking = false;
+String reservation_booking_user = "";
+String reservation_start_text = "";
+String reservation_end_text = "";
+int lookahead_days_reserved = 7;
+
 // Screen state / auto-timeout
+static bool reservation_screen_visible = false;
 static bool details_screen_visible = false;
 static unsigned long details_screen_shown_at = 0;
 static const unsigned long DETAILS_SCREEN_TIMEOUT_MS = 30000UL;  // 30 seconds on problem description
@@ -100,6 +118,9 @@ void updateOuterRing(bool hasTask);          // Outer ring: yellow if task, else
 void applyMainScreenState();  // Show/hide normal vs non-operational, set both rings
 void show_status_screen();   // Show status view, hide details
 void show_details_screen();  // Show details view, hide status
+void show_reservation_screen();
+void refreshReservationWidgets();
+void applyNextReservationMQTT(JsonDocument& doc);
 
 void setup() {
   Serial.begin(9600);
@@ -114,13 +135,16 @@ void setup() {
   mqtt_topic_status = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/status";
   mqtt_topic_operational = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/operational";
   mqtt_topic_task = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/task";
+  mqtt_topic_next_reservation = String(MQTT_TOPIC_PREFIX) + "/" + String(TARGET_TOOL_ID) + "/next_reservation";
   Serial.print("MQTT Status Topic: ");
   Serial.println(mqtt_topic_status);
   Serial.print("MQTT Operational Topic: ");
   Serial.println(mqtt_topic_operational);
   Serial.print("MQTT Task Topic: ");
   Serial.println(mqtt_topic_task);
-  
+  Serial.print("MQTT next_reservation: ");
+  Serial.println(mqtt_topic_next_reservation);
+
   // Initialize TFT display
   tft.init();
   tft.setRotation(DISPLAY_ROTATION); // Use rotation from build flags
@@ -447,6 +471,85 @@ void create_simple_ui() {
   lv_obj_add_event_cb(btn_forward, [](lv_event_t *e) { show_details_screen(); }, LV_EVENT_CLICKED, NULL);
   lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);  // Shown only when has_task
 
+  const int arrowGap = 10;
+  btn_main_to_reservation = lv_btn_create(screen);
+  lv_obj_set_size(btn_main_to_reservation, arrowSize, arrowSize);
+  lv_obj_align(btn_main_to_reservation, LV_ALIGN_BOTTOM_RIGHT, -(arrowMargin + arrowSize + arrowGap), -arrowMargin);
+  lv_obj_set_style_radius(btn_main_to_reservation, arrowSize / 2, 0);
+  lv_obj_set_style_bg_color(btn_main_to_reservation, lv_color_hex(0x2196F3), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(btn_main_to_reservation, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_t *lbl_mr = lv_label_create(btn_main_to_reservation);
+  lv_label_set_text(lbl_mr, LV_SYMBOL_LEFT);
+  lv_obj_set_style_text_color(lbl_mr, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_center(lbl_mr);
+  lv_obj_add_event_cb(btn_main_to_reservation, [](lv_event_t *e) { show_reservation_screen(); }, LV_EVENT_CLICKED, NULL);
+
+  // Next reservation screen (tool name + rows + empty state + back)
+  reservation_container = lv_obj_create(screen);
+  lv_obj_set_size(reservation_container, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+  lv_obj_set_pos(reservation_container, 0, 0);
+  lv_obj_set_style_bg_color(reservation_container, lv_color_hex(backgroundColor), 0);
+  lv_obj_set_style_border_width(reservation_container, 0, 0);
+  lv_obj_set_style_pad_left(reservation_container, 24, 0);
+  lv_obj_set_style_pad_right(reservation_container, 16, 0);
+  lv_obj_set_style_pad_top(reservation_container, screenMargin, 0);
+  lv_obj_set_scrollbar_mode(reservation_container, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_add_flag(reservation_container, LV_OBJ_FLAG_HIDDEN);
+
+  res_title_label = lv_label_create(reservation_container);
+  lv_label_set_text(res_title_label, toolDisplayName.c_str());
+  lv_obj_set_style_text_font(res_title_label, titleFont, 0);
+  lv_obj_set_style_text_color(res_title_label, lv_color_hex(textColor), 0);
+  lv_obj_align(res_title_label, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  res_next_row_lbl = lv_label_create(reservation_container);
+  lv_label_set_text(res_next_row_lbl, "Next Reservation");
+  lv_obj_set_style_text_font(res_next_row_lbl, labelFont, 0);
+  lv_obj_set_style_text_color(res_next_row_lbl, lv_color_hex(textColor), 0);
+  lv_obj_align(res_next_row_lbl, LV_ALIGN_TOP_LEFT, 0, 56);
+
+  res_next_row_val = lv_label_create(reservation_container);
+  lv_label_set_text(res_next_row_val, "--");
+  lv_obj_set_style_text_font(res_next_row_val, valueFont, 0);
+  lv_obj_set_style_text_color(res_next_row_val, lv_color_hex(textColor), 0);
+  lv_obj_align(res_next_row_val, LV_ALIGN_TOP_LEFT, 0, 74);
+
+  res_time_row_lbl = lv_label_create(reservation_container);
+  lv_label_set_text(res_time_row_lbl, "Reservation time");
+  lv_obj_set_style_text_font(res_time_row_lbl, labelFont, 0);
+  lv_obj_set_style_text_color(res_time_row_lbl, lv_color_hex(textColor), 0);
+  lv_obj_align(res_time_row_lbl, LV_ALIGN_TOP_LEFT, 0, 128);
+
+  res_time_row_val = lv_label_create(reservation_container);
+  lv_label_set_text(res_time_row_val, "--");
+  lv_obj_set_style_text_font(res_time_row_val, valueFont, 0);
+  lv_obj_set_style_text_color(res_time_row_val, lv_color_hex(textColor), 0);
+  lv_label_set_long_mode(res_time_row_val, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(res_time_row_val, DISPLAY_WIDTH - 48);
+  lv_obj_align(res_time_row_val, LV_ALIGN_TOP_LEFT, 0, 146);
+
+  res_empty_label = lv_label_create(reservation_container);
+  lv_label_set_text(res_empty_label, "");
+  lv_obj_set_width(res_empty_label, DISPLAY_WIDTH - 48);
+  lv_label_set_long_mode(res_empty_label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_font(res_empty_label, valueFont, 0);
+  lv_obj_set_style_text_color(res_empty_label, lv_color_hex(textColor), 0);
+  lv_obj_set_style_text_align(res_empty_label, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(res_empty_label, LV_ALIGN_CENTER, 0, -20);
+  lv_obj_add_flag(res_empty_label, LV_OBJ_FLAG_HIDDEN);
+
+  btn_reservation_back = lv_btn_create(reservation_container);
+  lv_obj_set_size(btn_reservation_back, arrowSize, arrowSize);
+  lv_obj_align(btn_reservation_back, LV_ALIGN_BOTTOM_LEFT, arrowMargin, -arrowMargin);
+  lv_obj_set_style_radius(btn_reservation_back, arrowSize / 2, 0);
+  lv_obj_set_style_bg_color(btn_reservation_back, lv_color_hex(0x2196F3), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(btn_reservation_back, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_t *lbl_rb = lv_label_create(btn_reservation_back);
+  lv_label_set_text(lbl_rb, LV_SYMBOL_RIGHT);
+  lv_obj_set_style_text_color(lbl_rb, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_center(lbl_rb);
+  lv_obj_add_event_cb(btn_reservation_back, [](lv_event_t *e) { show_status_screen(); }, LV_EVENT_CLICKED, NULL);
+
   // Details screen (problem description + back arrow) – hidden by default
   details_container = lv_obj_create(screen);
   lv_obj_set_size(details_container, DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -484,11 +587,13 @@ void create_simple_ui() {
   lv_obj_center(lbl_back);
   lv_obj_add_event_cb(btn_back, [](lv_event_t *e) { show_status_screen(); }, LV_EVENT_CLICKED, NULL);
 
+  refreshReservationWidgets();
   applyMainScreenState();
-  Serial.println("LVGL UI created (status + details with arrows)");
+  Serial.println("LVGL UI created (status + details + reservation screens)");
 }
 
 void show_status_screen() {
+  if (reservation_container) lv_obj_add_flag(reservation_container, LV_OBJ_FLAG_HIDDEN);
   if (details_container) lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
   if (btn_forward) {
     if (has_task)
@@ -496,17 +601,116 @@ void show_status_screen() {
     else
       lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
   }
+  if (btn_main_to_reservation)
+    lv_obj_clear_flag(btn_main_to_reservation, LV_OBJ_FLAG_HIDDEN);
   if (normal_container) lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
   applyMainScreenState();  // Style normal screen (red+white when non-operational, else white+black)
   details_screen_visible = false;
+  reservation_screen_visible = false;
 }
 
 void show_details_screen() {
   if (normal_container) lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
   if (btn_forward) lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
+  if (btn_main_to_reservation) lv_obj_add_flag(btn_main_to_reservation, LV_OBJ_FLAG_HIDDEN);
+  if (reservation_container) lv_obj_add_flag(reservation_container, LV_OBJ_FLAG_HIDDEN);
   if (details_container) lv_obj_clear_flag(details_container, LV_OBJ_FLAG_HIDDEN);
   details_screen_visible = true;
+  reservation_screen_visible = false;
   details_screen_shown_at = millis();
+}
+
+void refreshReservationWidgets() {
+  if (res_title_label)
+    lv_label_set_text(res_title_label, toolDisplayName.c_str());
+  char emptyBuf[120];
+  snprintf(emptyBuf, sizeof(emptyBuf),
+           "No reservations for the next %d days",
+           lookahead_days_reserved);
+
+  const bool booked = reservation_has_booking;
+  if (booked && res_empty_label)
+    lv_obj_add_flag(res_empty_label, LV_OBJ_FLAG_HIDDEN);
+  else if (res_empty_label) {
+    lv_label_set_text(res_empty_label, emptyBuf);
+    lv_obj_clear_flag(res_empty_label, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  if (booked) {
+    if (res_next_row_lbl) lv_obj_clear_flag(res_next_row_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (res_next_row_val)
+      lv_label_set_text(res_next_row_val,
+                        reservation_booking_user.length()
+                            ? reservation_booking_user.c_str()
+                            : "--");
+    if (res_time_row_lbl) lv_obj_clear_flag(res_time_row_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (res_time_row_val) {
+      String timeBlock = reservation_start_text;
+      if (reservation_end_text.length()) {
+        timeBlock += "\n";
+        timeBlock += reservation_end_text;
+      }
+      if (timeBlock.length() == 0)
+        timeBlock = "--";
+      lv_label_set_text(res_time_row_val, timeBlock.c_str());
+      lv_obj_clear_flag(res_time_row_val, LV_OBJ_FLAG_HIDDEN);
+    }
+  } else {
+    if (res_next_row_lbl) lv_obj_add_flag(res_next_row_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (res_next_row_val) lv_obj_add_flag(res_next_row_val, LV_OBJ_FLAG_HIDDEN);
+    if (res_time_row_lbl) lv_obj_add_flag(res_time_row_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (res_time_row_val) lv_obj_add_flag(res_time_row_val, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void show_reservation_screen() {
+  if (normal_container) lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
+  if (details_container) lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
+  if (btn_forward) lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
+  if (btn_main_to_reservation) lv_obj_add_flag(btn_main_to_reservation, LV_OBJ_FLAG_HIDDEN);
+  if (reservation_container) {
+    refreshReservationWidgets();
+    lv_obj_clear_flag(reservation_container, LV_OBJ_FLAG_HIDDEN);
+  }
+  reservation_screen_visible = true;
+  details_screen_visible = false;
+}
+
+void applyNextReservationMQTT(JsonDocument& doc) {
+  if (doc["tool_name"].is<const char*>()) {
+    toolDisplayName = toolNameForDisplay(doc["tool_name"].as<const char*>());
+    if (title_label)
+      lv_label_set_text(title_label, toolDisplayName.c_str());
+    if (res_title_label)
+      lv_label_set_text(res_title_label, toolDisplayName.c_str());
+  }
+  if (doc["lookahead_days"].is<int>())
+    lookahead_days_reserved = doc["lookahead_days"].as<int>();
+  else if (doc["lookahead_days"].is<long>())
+    lookahead_days_reserved = (int)doc["lookahead_days"].as<long>();
+
+  reservation_has_booking = !doc["reservation_id"].isNull();
+
+  if (reservation_has_booking) {
+    if (doc["user_name"].is<const char*>())
+      reservation_booking_user = doc["user_name"].as<const char*>();
+    else
+      reservation_booking_user = "";
+    if (doc["timestamp"].is<const char*>())
+      reservation_start_text = doc["timestamp"].as<const char*>();
+    else
+      reservation_start_text = "";
+    if (doc["end_timestamp"].is<const char*>())
+      reservation_end_text = doc["end_timestamp"].as<const char*>();
+    else
+      reservation_end_text = "";
+  } else {
+    reservation_booking_user = "";
+    reservation_start_text = "";
+    reservation_end_text = "";
+  }
+
+  refreshReservationWidgets();
 }
 
 // MQTT Setup
@@ -606,12 +810,13 @@ void connectMQTT() {
       Serial.print(":");
       Serial.println(mqtt_port);
       
-      // Subscribe to topics (status, operational, task, overall)
+      // Subscribe to topics (status, operational, task, overall, next_reservation)
       bool sub1 = mqttClient.subscribe(mqtt_topic_status.c_str());
       bool sub2 = mqttClient.subscribe(mqtt_topic_operational.c_str());
       bool sub3 = mqttClient.subscribe(mqtt_topic_task.c_str());
       bool sub4 = mqttClient.subscribe(mqtt_topic_overall.c_str());
-      
+      bool sub5 = mqttClient.subscribe(mqtt_topic_next_reservation.c_str());
+
       Serial.print("Subscribe status: ");
       Serial.println(sub1 ? "OK" : "FAIL");
       Serial.print("Subscribe operational: ");
@@ -620,6 +825,8 @@ void connectMQTT() {
       Serial.println(sub3 ? "OK" : "FAIL");
       Serial.print("Subscribe overall: ");
       Serial.println(sub4 ? "OK" : "FAIL");
+      Serial.print("Subscribe next_reservation: ");
+      Serial.println(sub5 ? "OK" : "FAIL");
       
       // Update status
       updateConnectionStatus();
@@ -785,7 +992,12 @@ void processMQTTMessage(const char* topic, const char* payload) {
     Serial.println(error.c_str());
     return;
   }
-  
+
+  if (strcmp(topic, mqtt_topic_next_reservation.c_str()) == 0) {
+    applyNextReservationMQTT(doc);
+    return;
+  }
+
   // ---- Operational: independent message ----
   if (strcmp(topic, mqtt_topic_operational.c_str()) == 0) {
     tool_operational = doc["operational"] | true;
@@ -793,6 +1005,8 @@ void processMQTTMessage(const char* topic, const char* payload) {
       toolDisplayName = toolNameForDisplay(doc["tool_name"].as<const char*>());
       if (title_label)
         lv_label_set_text(title_label, toolDisplayName.c_str());
+      if (res_title_label)
+        lv_label_set_text(res_title_label, toolDisplayName.c_str());
     }
     applyMainScreenState();
     Serial.print(millis());
@@ -901,6 +1115,8 @@ void processMQTTMessage(const char* topic, const char* payload) {
       if (newDisplayName != toolDisplayName && title_label) {
         toolDisplayName = newDisplayName;
         lv_label_set_text(title_label, toolDisplayName.c_str());
+        if (res_title_label)
+          lv_label_set_text(res_title_label, toolDisplayName.c_str());
       }
     }
     if (doc["event_type"].is<const char*>()) {
