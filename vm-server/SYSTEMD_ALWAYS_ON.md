@@ -2,28 +2,37 @@
 
 Use this on your Linux VM so the MQTT broker and NEMO server **start at boot** and **restart after crashes or power loss** (once the machine is back up).
 
-**Paths live in the unit files:** open `systemd/nemo-mosquitto.service`, `systemd/nemo-vm-server.service`, and `systemd/nemo-api-sync.service`, set `NEMO_VM_SERVER_DIR` to the absolute path of your `vm-server` directory, and set `MOSQUITTO_BIN` if `mosquitto` is not at `/usr/sbin/mosquitto`. **`User=` / `Group=` are optional** on all services (omit or leave commented for root; set them for production least-privilege).
+**Paths live in the unit files:** open `systemd/nemo-mosquitto.service`, `systemd/nemo-vm-server.service`, and `systemd/nemo-api-sync.service`, set `NEMO_VM_SERVER_DIR` to the absolute path of your `vm-server` directory, and set `MOSQUITTO_BIN` if `mosquitto` is not at `/usr/sbin/mosquitto`. `**User=` / `Group=` are optional** on all services (omit or leave commented for root; set them for production least-privilege).
 
 ---
 
 ## 1. One-time prep
 
 1. **Install Mosquitto** (if needed), e.g. on Ubuntu:
-   ```bash
+  ```bash
    sudo apt-get update && sudo apt-get install -y mosquitto mosquitto-clients
-   ```
+  ```
 2. **Confirm the broker binary path** if you are unsure:
-   ```bash
+  ```bash
    command -v mosquitto
-   ```
+  ```
    Put that path in `MOSQUITTO_BIN=` under `[Service]` in `nemo-mosquitto.service`.
-3. **Finish app setup** from `vm-server` (venv, `config.env`, passwords, etc.) using `./setup.sh` or your usual process so `mqtt/config/mosquitto.conf` and `mqtt/config/passwd` exist and are valid. **`mosquitto.conf` is gitignored**—a clone has only `mosquitto.conf.example` until you run setup or copy it; without the real file, `nemo-mosquitto` will refuse to start.
-4. **Permissions**: the distro `mosquitto` binary **drops to the `mosquitto` system user** after start (even when systemd does **not** set `User=`). Files created by `./setup.sh` are usually owned by your login user, with `mqtt/config/passwd` at mode `600`, so the broker cannot read the password file or write `mqtt/log/mosquitto.log`. Fix once (adjust the path):
-   ```bash
+3. **Finish app setup** from `vm-server` (venv, `config.env`, passwords, etc.) using `./setup.sh` or your usual process so `mqtt/config/mosquitto.conf` and `mqtt/config/passwd` exist and are valid. `**mosquitto.conf` is gitignored**—a clone has only `mosquitto.conf.example` until you run setup or copy it; without the real file, `nemo-mosquitto` will refuse to start.
+4. **(Optional) Configure the NEMO HTTPS API sync** in `vm-server/config.env` if you want the VM to periodically download reservations / directory data and publish per-tool retained MQTT topics.
+  The API sync is enabled when you set the API auth env vars (and disabled if you omit them):
+  - `NEMO_API_BASE_URL` (default in scripts: `https://nemo.stanford.edu/api`)
+  - `NEMO_TOKEN`
+  - `NEMO_API_AUTH_SCHEME` (commonly `Token`)
+   Optional tuning:
+  - `NEMO_RESERVATIONS_POLL_SECONDS` (default 900)
+  - `NEMO_RESERVATIONS_LOOKAHEAD_DAYS`
+   The systemd unit for this is `nemo-api-sync.service`, which runs `vm-server/run_api_sync_and_publish_loop.py` (downloads on a schedule, then runs `publish_next_reservations_from_files.py` to publish retained MQTT topics like `{MQTT_TOPIC_PREFIX}/{tool_id}/next_reservation`).
+5. **Permissions**: the distro `mosquitto` binary **drops to the `mosquitto` system user** after start (even when systemd does **not** set `User=`). Files created by `./setup.sh` are usually owned by your login user, with `mqtt/config/passwd` at mode `600`, so the broker cannot read the password file or write `mqtt/log/mosquitto.log`. Fix once (adjust the path):
+  ```bash
    sudo chown -R mosquitto:mosquitto /path/to/vm-server/mqtt/data /path/to/vm-server/mqtt/log
    sudo chown mosquitto:mosquitto /path/to/vm-server/mqtt/config/passwd
    sudo chmod 600 /path/to/vm-server/mqtt/config/passwd
-   ```
+  ```
    Keep `mqtt/config/mosquitto.conf` readable by `mosquitto` (e.g. `644`, or root:`mosquitto` and `640`). If you instead set `User=` / `Group=` in the unit file, use that account everywhere above instead of `mosquitto`.
 
 ---
@@ -48,7 +57,7 @@ To undo later: `sudo systemctl unmask mosquitto`.
 
 ## 3. Install custom unit files
 
-1. Edit **`Environment=NEMO_VM_SERVER_DIR=...`** (and **`MOSQUITTO_BIN=...`** if needed) in the unit files under `vm-server/systemd/`.
+1. Edit `**Environment=NEMO_VM_SERVER_DIR=...**` (and `**MOSQUITTO_BIN=...**` if needed) in the unit files under `vm-server/systemd/`.
 2. Copy (or symlink) the units into `/etc/systemd/system/`:
 
 ```bash
@@ -59,7 +68,15 @@ sudo cp /opt/NEMO-Tool-Display/vm-server/systemd/nemo-api-sync.service /etc/syst
 sudo systemctl daemon-reload
 ```
 
-If you previously installed **`nemo-mosquitto-exec.sh`** or **`nemo-vm-server-exec.sh`** under `/etc/systemd/system/`, remove those files or symlinks; they are no longer used.
+If you see `cp: not writing through dangling symlink '/etc/systemd/system/nemo-mosquitto.service'`, it means `/etc/systemd/system/nemo-mosquitto.service` already exists as a **broken symlink**. Remove it and re-copy:
+
+```bash
+sudo rm -f /etc/systemd/system/nemo-mosquitto.service
+sudo rm -f /etc/systemd/system/nemo-vm-server.service
+sudo rm -f /etc/systemd/system/nemo-api-sync.service
+```
+
+If you previously installed `**nemo-mosquitto-exec.sh**` or `**nemo-vm-server-exec.sh**` under `/etc/systemd/system/`, remove those files or symlinks; they are no longer used.
 
 ---
 
@@ -104,19 +121,24 @@ systemctl is-active nemo-mosquitto.service nemo-vm-server.service nemo-api-sync.
 
 ## 6. Logs and troubleshooting
 
-| Component | Where to look |
-|-----------|----------------|
-| Mosquitto (systemd) | `journalctl -u nemo-mosquitto.service -f` |
-| Mosquitto (file) | `vm-server/mqtt/log/mosquitto.log` |
-| `main.py` (systemd) | `journalctl -u nemo-vm-server.service -f` |
-| `main.py` (app log) | `vm-server/nemo_server.log` |
-| API sync + next reservations (systemd) | `journalctl -u nemo-api-sync.service -f` |
+
+| Component                              | Where to look                             |
+| -------------------------------------- | ----------------------------------------- |
+| Mosquitto (systemd)                    | `journalctl -u nemo-mosquitto.service -f` |
+| Mosquitto (file)                       | `vm-server/mqtt/log/mosquitto.log`        |
+| `main.py` (systemd)                    | `journalctl -u nemo-vm-server.service -f` |
+| `main.py` (app log)                    | `vm-server/nemo_server.log`               |
+| API sync + next reservations (systemd) | `journalctl -u nemo-api-sync.service -f`  |
+
 
 Common issues:
 
 - **Ports in use**: something else (including old `mosquitto.service`) still bound to 1883/1886—finish step 2 and reboot once.
-- **Unable to open** `passwd` or **log file** under `mqtt/log/`: almost always the `mosquitto` user (privilege drop) vs. files owned by your admin account—use the `chown` commands in step 1.4.
+- **Dangling symlink when copying units**: if `cp` says “not writing through dangling symlink” for a `nemo-*.service` file under `/etc/systemd/system/`, remove the broken symlink (example shown in step 3) and re-run `systemctl daemon-reload`.
+- **Unable to open** `passwd` or **log file** under `mqtt/log/`: almost always the `mosquitto` user (privilege drop) vs. files owned by your admin account—use the `chown` commands in step 1.5.
 - **Wrong cwd / paths**: `WorkingDirectory` must be your `vm-server` root so paths inside `mosquitto.conf` (e.g. `mqtt/data/`) resolve correctly.
+- **API sync auth failures (401/403)**: check `NEMO_TOKEN`, `NEMO_API_AUTH_SCHEME`, and `NEMO_API_BASE_URL` in `config.env`. If you want to disable API sync entirely, omit the API auth env vars and stop/disable `nemo-api-sync.service`.
+- **API sync can’t reach the site**: confirm outbound HTTPS works from the VM (`curl -I https://nemo.stanford.edu/api/`), DNS is working, and the VM clock is reasonable (TLS can fail if time is far off).
 
 ---
 

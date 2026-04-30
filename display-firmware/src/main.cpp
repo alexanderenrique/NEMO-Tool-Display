@@ -95,6 +95,7 @@ bool reservation_has_booking = false;
 String reservation_booking_user = "";
 String reservation_start_text = "";
 String reservation_end_text = "";
+String reservation_time_range_text = "";
 int lookahead_days_reserved = 7;
 
 // Screen state / auto-timeout (reservation + problems screens return to status after idle)
@@ -684,7 +685,9 @@ void refreshReservationWidgets() {
     if (res_time_row_lbl) lv_obj_clear_flag(res_time_row_lbl, LV_OBJ_FLAG_HIDDEN);
     if (res_time_row_val) {
       String timeBlock = "";
-      if (reservation_start_text.length() && reservation_end_text.length())
+      if (reservation_time_range_text.length()) {
+        timeBlock = reservation_time_range_text;
+      } else if (reservation_start_text.length() && reservation_end_text.length())
         timeBlock = reservation_start_text + " - " + reservation_end_text;
       else if (reservation_start_text.length())
         timeBlock = reservation_start_text;
@@ -761,11 +764,28 @@ void applyNextReservationMQTT(JsonDocument& doc) {
       reservation_end_text = doc["end_timestamp"].as<const char*>();
     else
       reservation_end_text = "";
+    if (doc["time_range"].is<const char*>())
+      reservation_time_range_text = doc["time_range"].as<const char*>();
+    else
+      reservation_time_range_text = "";
   } else {
     reservation_booking_user = "";
     reservation_start_text = "";
     reservation_end_text = "";
+    reservation_time_range_text = "";
   }
+
+  Serial.print(millis());
+  Serial.print(" ms [state] next_reservation has_booking=");
+  Serial.print(reservation_has_booking ? "1" : "0");
+  Serial.print(" user_name=");
+  Serial.print(reservation_booking_user.length() ? reservation_booking_user.c_str() : "(empty)");
+  Serial.print(" start=");
+  Serial.print(reservation_start_text.length() ? reservation_start_text.c_str() : "(empty)");
+  Serial.print(" end=");
+  Serial.println(reservation_end_text.length() ? reservation_end_text.c_str() : "(empty)");
+  Serial.print(" time_range=");
+  Serial.println(reservation_time_range_text.length() ? reservation_time_range_text.c_str() : "(empty)");
 
   refreshReservationWidgets();
   applyMainScreenState();
@@ -1048,10 +1068,17 @@ void processMQTTMessage(const char* topic, const char* payload) {
   if (error) {
     Serial.print("JSON parsing failed: ");
     Serial.println(error.c_str());
+    Serial.print("Topic: ");
+    Serial.println(topic);
+    Serial.print("Payload: ");
+    Serial.println(payload);
     return;
   }
 
   if (strcmp(topic, mqtt_topic_next_reservation.c_str()) == 0) {
+    Serial.print(millis());
+    Serial.print(" ms [mqtt] next_reservation payload=");
+    Serial.println(payload);
     applyNextReservationMQTT(doc);
     return;
   }

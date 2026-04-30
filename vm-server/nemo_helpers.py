@@ -204,6 +204,61 @@ def format_display_like_vm_main(iso_field: Optional[str], tz_offset_hours: int) 
         return "Invalid Time"
 
 
+def _format_12h_hhmm(dt: datetime) -> str:
+    """Return `H:MM` (12-hour, no leading zero hour)."""
+    return dt.strftime("%I:%M").lstrip("0")
+
+
+def _format_ampm(dt: datetime) -> str:
+    """Return lowercase am/pm."""
+    return dt.strftime("%p").lower()
+
+
+def format_reservation_time_range(
+    start_iso: Optional[str],
+    end_iso: Optional[str],
+    tz_offset_hours: int,
+) -> str:
+    """Return a compact single-line reservation time range for the display.
+
+    Examples:
+      - Apr 30 1:00–2:30pm   (single am/pm when same half-day)
+      - Apr 30 11:30am–1:00pm
+      - Apr 30 1:00pm        (no end provided)
+
+    Note: date is always derived from the (localized) start time.
+    """
+    if not start_iso or not isinstance(start_iso, str):
+        return ""
+
+    sdt = parse_iso_dt(start_iso)
+    if not sdt:
+        return ""
+    sdt = sdt + timedelta(hours=tz_offset_hours)
+
+    # Date from start only (ignore overnight edge cases).
+    date_part = f"{sdt.strftime('%b')} {sdt.day}"
+
+    end_iso = end_iso if isinstance(end_iso, str) and end_iso else None
+    if not end_iso:
+        return f"{date_part} {_format_12h_hhmm(sdt)}{_format_ampm(sdt)}"
+
+    edt = parse_iso_dt(end_iso)
+    if not edt:
+        return f"{date_part} {_format_12h_hhmm(sdt)}{_format_ampm(sdt)}"
+    edt = edt + timedelta(hours=tz_offset_hours)
+
+    st = _format_12h_hhmm(sdt)
+    et = _format_12h_hhmm(edt)
+    sa = _format_ampm(sdt)
+    ea = _format_ampm(edt)
+
+    dash = "–"  # en-dash
+    if sa == ea:
+        return f"{date_part} {st}{dash}{et}{ea}"
+    return f"{date_part} {st}{sa}{dash}{et}{ea}"
+
+
 def pick_next_reservation_for_tool(
     reservations: List[Any],
     tool_id: int,
@@ -253,6 +308,7 @@ def pick_next_reservation_for_tool(
             "user_name": "",
             "timestamp": "",
             "end_timestamp": "",
+            "time_range": "",
             "lookahead_days": lad,
         }
 
@@ -273,6 +329,7 @@ def pick_next_reservation_for_tool(
     end_iso = best.get("end") if isinstance(best.get("end"), str) else ""
     timestamp_s = format_display_like_vm_main(start_iso, tz_offset_hours)
     end_s = format_display_like_vm_main(end_iso, tz_offset_hours) if end_iso else ""
+    time_range = format_reservation_time_range(start_iso, end_iso, tz_offset_hours)
 
     return {
         "tool_id": tool_id,
@@ -281,6 +338,7 @@ def pick_next_reservation_for_tool(
         "user_name": user_name_out,
         "timestamp": timestamp_s,
         "end_timestamp": end_s,
+        "time_range": time_range,
         "lookahead_days": lad,
         "cancelled": bool(best.get("cancelled")),
     }
