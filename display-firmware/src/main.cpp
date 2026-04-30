@@ -74,13 +74,17 @@ lv_obj_t *normal_container = nullptr;       // Shown when tool is operational (r
 lv_obj_t *task_summary_label = nullptr;     // Task summary line, visible only when non-operational (same layout as status)
 lv_obj_t *problem_description_label = nullptr;
 lv_obj_t *details_container = nullptr;   // Details screen (problem description)
-lv_obj_t *btn_forward = nullptr;         // Arrow lower-right: go to Details
-lv_obj_t *btn_back = nullptr;           // Arrow on Details: back to Status
+lv_obj_t *details_outer_ring = nullptr;
+lv_obj_t *details_status_indicator = nullptr;
+lv_obj_t *details_title_label = nullptr;
+lv_obj_t *res_outer_ring = nullptr;
+lv_obj_t *res_status_indicator = nullptr;
+// Global navigation (always visible, bottom-right)
+lv_obj_t *btn_nav_back = nullptr;        // Left arrow (back)
+lv_obj_t *btn_nav_forward = nullptr;     // Right arrow (forward)
 
 // Next reservation page (per-tool topic .../<TARGET_TOOL_ID>/next_reservation)
-lv_obj_t *btn_main_to_reservation = nullptr; // Blue left: main → reservation page
 lv_obj_t *reservation_container = nullptr;
-lv_obj_t *btn_reservation_back = nullptr;       // Blue right: reservation → main
 lv_obj_t *res_title_label = nullptr;
 lv_obj_t *res_next_row_lbl = nullptr;
 lv_obj_t *res_next_row_val = nullptr;
@@ -93,11 +97,12 @@ String reservation_start_text = "";
 String reservation_end_text = "";
 int lookahead_days_reserved = 7;
 
-// Screen state / auto-timeout
-static bool reservation_screen_visible = false;
-static bool details_screen_visible = false;
-static unsigned long details_screen_shown_at = 0;
-static const unsigned long DETAILS_SCREEN_TIMEOUT_MS = 30000UL;  // 30 seconds on problem description
+// Screen state / auto-timeout (reservation + problems screens return to status after idle)
+static unsigned long secondary_screen_shown_at = 0;
+static const unsigned long SECONDARY_SCREEN_TIMEOUT_MS = 30000UL;
+
+enum ScreenId { SCREEN_STATUS = 0, SCREEN_DETAILS = 1, SCREEN_RESERVATION = 2 };
+static ScreenId current_screen = SCREEN_STATUS;
 
 // Tool name from config
 String toolDisplayName = "";
@@ -119,6 +124,8 @@ void applyMainScreenState();  // Show/hide normal vs non-operational, set both r
 void show_status_screen();   // Show status view, hide details
 void show_details_screen();  // Show details view, hide status
 void show_reservation_screen();
+static void navigate_forward();
+static void navigate_back();
 void refreshReservationWidgets();
 void applyNextReservationMQTT(JsonDocument& doc);
 
@@ -255,9 +262,10 @@ void loop() {
       updateConnectionStatus();
     }
 
-    // Auto-return from details (problem description) screen after timeout
-    if (details_screen_visible && (now - details_screen_shown_at >= DETAILS_SCREEN_TIMEOUT_MS)) {
-      Serial.println("Details screen timeout reached, returning to status screen");
+    // Auto-return to enable/disable screen after 30s on reservation or problems
+    if (current_screen != SCREEN_STATUS &&
+        (now - secondary_screen_shown_at >= SECONDARY_SCREEN_TIMEOUT_MS)) {
+      Serial.println("Secondary screen timeout, returning to status screen");
       show_status_screen();
     }
   }
@@ -359,6 +367,21 @@ void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data) {
   }
 }
 
+static String reservationScreenTitleText() {
+  return String("Next User");
+}
+
+static String detailsScreenTitleText() {
+  return String("Problems");
+}
+
+static void applySecondaryScreenTitles() {
+  if (res_title_label)
+    lv_label_set_text(res_title_label, reservationScreenTitleText().c_str());
+  if (details_title_label)
+    lv_label_set_text(details_title_label, detailsScreenTitleText().c_str());
+}
+
 // Create LVGL UI: status view only (no tabs)
 void create_simple_ui() {
   const uint32_t backgroundColor = 0xFFFFFF;
@@ -368,6 +391,17 @@ void create_simple_ui() {
   const lv_font_t* labelFont = &lv_font_montserrat_16;
   const lv_font_t* valueFont = &lv_font_montserrat_32;
   const int screenMargin = 8;
+  const int outerRingWidth = 14;
+  const int innerRingWidth = 20;
+  const int outerW = DISPLAY_WIDTH - 2 * screenMargin;
+  const int outerH = DISPLAY_HEIGHT - 2 * screenMargin;
+  const int innerW = outerW - 2 * outerRingWidth;
+  const int innerH = outerH - 2 * outerRingWidth;
+  const int arrowSize = 48;
+  const int arrowMargin = 12;
+  const int arrowGap = 10;
+  const int contentPad = 8;
+  const int textAreaW = innerW - 2 * contentPad;
 
   lv_obj_t *screen = lv_scr_act();
 
@@ -382,10 +416,6 @@ void create_simple_ui() {
   lv_obj_set_scrollbar_mode(normal_container, LV_SCROLLBAR_MODE_OFF);
 
   // Outer ring: always same size so inner content never shifts. Yellow when task, background color when no task.
-  const int outerRingWidth = 14;
-  const int innerRingWidth = 20;
-  int outerW = DISPLAY_WIDTH - 2 * screenMargin;
-  int outerH = DISPLAY_HEIGHT - 2 * screenMargin;
   outer_ring = lv_obj_create(normal_container);
   lv_obj_set_size(outer_ring, outerW, outerH);
   lv_obj_set_pos(outer_ring, screenMargin, screenMargin);
@@ -399,8 +429,6 @@ void create_simple_ui() {
   lv_obj_clear_flag(outer_ring, LV_OBJ_FLAG_SCROLLABLE);
 
   // Inner ring: green = enabled, red = disabled. Flush with outer ring so only two rings show.
-  int innerW = outerW - 2 * outerRingWidth;
-  int innerH = outerH - 2 * outerRingWidth;
   status_indicator = lv_obj_create(outer_ring);
   lv_obj_set_size(status_indicator, innerW, innerH);
   lv_obj_set_pos(status_indicator, 0, 0);  // Flush to outer ring content area – no gap
@@ -408,7 +436,7 @@ void create_simple_ui() {
   lv_obj_set_style_border_width(status_indicator, innerRingWidth, 0);
   lv_obj_set_style_border_color(status_indicator, lv_color_hex(0x00FF00), 0);
   lv_obj_set_style_radius(status_indicator, 0, 0);
-  lv_obj_set_style_pad_all(status_indicator, 8, 0);
+  lv_obj_set_style_pad_all(status_indicator, contentPad, 0);
   lv_obj_set_style_outline_width(status_indicator, 0, 0);
   lv_obj_set_scrollbar_mode(status_indicator, LV_SCROLLBAR_MODE_OFF);
   lv_obj_clear_flag(status_indicator, LV_OBJ_FLAG_SCROLLABLE);
@@ -458,79 +486,96 @@ void create_simple_ui() {
   lv_label_set_long_mode(task_summary_label, LV_LABEL_LONG_WRAP);
   lv_obj_add_flag(task_summary_label, LV_OBJ_FLAG_HIDDEN);  // Shown only when non-operational
 
-  // Forward arrow (lower right): go to Details screen
-  const int arrowSize = 48;
-  const int arrowMargin = 12;
-  btn_forward = lv_btn_create(screen);
-  lv_obj_set_size(btn_forward, arrowSize, arrowSize);
-  lv_obj_align(btn_forward, LV_ALIGN_BOTTOM_RIGHT, -arrowMargin, -arrowMargin);
-  lv_obj_set_style_radius(btn_forward, arrowSize / 2, 0);
-  lv_obj_t *lbl_fwd = lv_label_create(btn_forward);
+  // Global navigation arrows (always visible, bottom-right)
+  btn_nav_forward = lv_btn_create(screen);
+  lv_obj_set_size(btn_nav_forward, arrowSize, arrowSize);
+  lv_obj_align(btn_nav_forward, LV_ALIGN_BOTTOM_RIGHT, -arrowMargin, -arrowMargin);
+  lv_obj_set_style_radius(btn_nav_forward, arrowSize / 2, 0);
+  lv_obj_t *lbl_fwd = lv_label_create(btn_nav_forward);
   lv_label_set_text(lbl_fwd, LV_SYMBOL_RIGHT);
   lv_obj_center(lbl_fwd);
-  lv_obj_add_event_cb(btn_forward, [](lv_event_t *e) { show_details_screen(); }, LV_EVENT_CLICKED, NULL);
-  lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);  // Shown only when has_task
+  lv_obj_add_event_cb(btn_nav_forward, [](lv_event_t *e) { navigate_forward(); }, LV_EVENT_CLICKED, NULL);
 
-  const int arrowGap = 10;
-  btn_main_to_reservation = lv_btn_create(screen);
-  lv_obj_set_size(btn_main_to_reservation, arrowSize, arrowSize);
-  lv_obj_align(btn_main_to_reservation, LV_ALIGN_BOTTOM_RIGHT, -(arrowMargin + arrowSize + arrowGap), -arrowMargin);
-  lv_obj_set_style_radius(btn_main_to_reservation, arrowSize / 2, 0);
-  lv_obj_set_style_bg_color(btn_main_to_reservation, lv_color_hex(0x2196F3), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(btn_main_to_reservation, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_t *lbl_mr = lv_label_create(btn_main_to_reservation);
-  lv_label_set_text(lbl_mr, LV_SYMBOL_LEFT);
-  lv_obj_set_style_text_color(lbl_mr, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_center(lbl_mr);
-  lv_obj_add_event_cb(btn_main_to_reservation, [](lv_event_t *e) { show_reservation_screen(); }, LV_EVENT_CLICKED, NULL);
+  btn_nav_back = lv_btn_create(screen);
+  lv_obj_set_size(btn_nav_back, arrowSize, arrowSize);
+  lv_obj_align(btn_nav_back, LV_ALIGN_BOTTOM_RIGHT, -(arrowMargin + arrowSize + arrowGap), -arrowMargin);
+  lv_obj_set_style_radius(btn_nav_back, arrowSize / 2, 0);
+  lv_obj_t *lbl_bk = lv_label_create(btn_nav_back);
+  lv_label_set_text(lbl_bk, LV_SYMBOL_LEFT);
+  lv_obj_center(lbl_bk);
+  lv_obj_add_event_cb(btn_nav_back, [](lv_event_t *e) { navigate_back(); }, LV_EVENT_CLICKED, NULL);
 
-  // Next reservation screen (tool name + rows + empty state + back)
+  // Next reservation screen (same ring chrome + title layout as status screen)
   reservation_container = lv_obj_create(screen);
   lv_obj_set_size(reservation_container, DISPLAY_WIDTH, DISPLAY_HEIGHT);
   lv_obj_set_pos(reservation_container, 0, 0);
   lv_obj_set_style_bg_color(reservation_container, lv_color_hex(backgroundColor), 0);
   lv_obj_set_style_border_width(reservation_container, 0, 0);
-  lv_obj_set_style_pad_left(reservation_container, 24, 0);
-  lv_obj_set_style_pad_right(reservation_container, 16, 0);
-  lv_obj_set_style_pad_top(reservation_container, screenMargin, 0);
+  lv_obj_set_style_pad_all(reservation_container, 0, 0);
   lv_obj_set_scrollbar_mode(reservation_container, LV_SCROLLBAR_MODE_OFF);
   lv_obj_add_flag(reservation_container, LV_OBJ_FLAG_HIDDEN);
 
-  res_title_label = lv_label_create(reservation_container);
-  lv_label_set_text(res_title_label, toolDisplayName.c_str());
+  res_outer_ring = lv_obj_create(reservation_container);
+  lv_obj_set_size(res_outer_ring, outerW, outerH);
+  lv_obj_set_pos(res_outer_ring, screenMargin, screenMargin);
+  lv_obj_set_style_bg_opa(res_outer_ring, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(res_outer_ring, outerRingWidth, 0);
+  lv_obj_set_style_border_color(res_outer_ring, lv_color_hex(backgroundColor), 0);
+  lv_obj_set_style_radius(res_outer_ring, 0, 0);
+  lv_obj_set_style_pad_all(res_outer_ring, 0, 0);
+  lv_obj_set_style_outline_width(res_outer_ring, 0, 0);
+  lv_obj_set_scrollbar_mode(res_outer_ring, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(res_outer_ring, LV_OBJ_FLAG_SCROLLABLE);
+
+  res_status_indicator = lv_obj_create(res_outer_ring);
+  lv_obj_set_size(res_status_indicator, innerW, innerH);
+  lv_obj_set_pos(res_status_indicator, 0, 0);
+  lv_obj_set_style_bg_color(res_status_indicator, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_border_width(res_status_indicator, innerRingWidth, 0);
+  lv_obj_set_style_border_color(res_status_indicator, lv_color_hex(0x00FF00), 0);
+  lv_obj_set_style_radius(res_status_indicator, 0, 0);
+  lv_obj_set_style_pad_all(res_status_indicator, contentPad, 0);
+  lv_obj_set_style_outline_width(res_status_indicator, 0, 0);
+  lv_obj_set_scrollbar_mode(res_status_indicator, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(res_status_indicator, LV_OBJ_FLAG_SCROLLABLE);
+
+  res_title_label = lv_label_create(res_status_indicator);
+  lv_label_set_text(res_title_label, reservationScreenTitleText().c_str());
   lv_obj_set_style_text_font(res_title_label, titleFont, 0);
   lv_obj_set_style_text_color(res_title_label, lv_color_hex(textColor), 0);
+  lv_obj_set_width(res_title_label, textAreaW);
+  lv_label_set_long_mode(res_title_label, LV_LABEL_LONG_WRAP);
   lv_obj_align(res_title_label, LV_ALIGN_TOP_LEFT, 0, 0);
 
-  res_next_row_lbl = lv_label_create(reservation_container);
-  lv_label_set_text(res_next_row_lbl, "Next Reservation");
+  res_next_row_lbl = lv_label_create(res_status_indicator);
+  lv_label_set_text(res_next_row_lbl, "Name:");
   lv_obj_set_style_text_font(res_next_row_lbl, labelFont, 0);
   lv_obj_set_style_text_color(res_next_row_lbl, lv_color_hex(textColor), 0);
-  lv_obj_align(res_next_row_lbl, LV_ALIGN_TOP_LEFT, 0, 56);
+  lv_obj_align(res_next_row_lbl, LV_ALIGN_TOP_LEFT, 0, 65);
 
-  res_next_row_val = lv_label_create(reservation_container);
+  res_next_row_val = lv_label_create(res_status_indicator);
   lv_label_set_text(res_next_row_val, "--");
   lv_obj_set_style_text_font(res_next_row_val, valueFont, 0);
   lv_obj_set_style_text_color(res_next_row_val, lv_color_hex(textColor), 0);
-  lv_obj_align(res_next_row_val, LV_ALIGN_TOP_LEFT, 0, 74);
+  lv_obj_align(res_next_row_val, LV_ALIGN_TOP_LEFT, 0, 82);
 
-  res_time_row_lbl = lv_label_create(reservation_container);
-  lv_label_set_text(res_time_row_lbl, "Reservation time");
+  res_time_row_lbl = lv_label_create(res_status_indicator);
+  lv_label_set_text(res_time_row_lbl, "Reservation time:");
   lv_obj_set_style_text_font(res_time_row_lbl, labelFont, 0);
   lv_obj_set_style_text_color(res_time_row_lbl, lv_color_hex(textColor), 0);
-  lv_obj_align(res_time_row_lbl, LV_ALIGN_TOP_LEFT, 0, 128);
+  lv_obj_align(res_time_row_lbl, LV_ALIGN_TOP_LEFT, 0, 140);
 
-  res_time_row_val = lv_label_create(reservation_container);
+  res_time_row_val = lv_label_create(res_status_indicator);
   lv_label_set_text(res_time_row_val, "--");
   lv_obj_set_style_text_font(res_time_row_val, valueFont, 0);
   lv_obj_set_style_text_color(res_time_row_val, lv_color_hex(textColor), 0);
   lv_label_set_long_mode(res_time_row_val, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(res_time_row_val, DISPLAY_WIDTH - 48);
-  lv_obj_align(res_time_row_val, LV_ALIGN_TOP_LEFT, 0, 146);
+  lv_obj_set_width(res_time_row_val, textAreaW);
+  lv_obj_align(res_time_row_val, LV_ALIGN_TOP_LEFT, 0, 162);
 
-  res_empty_label = lv_label_create(reservation_container);
+  res_empty_label = lv_label_create(res_status_indicator);
   lv_label_set_text(res_empty_label, "");
-  lv_obj_set_width(res_empty_label, DISPLAY_WIDTH - 48);
+  lv_obj_set_width(res_empty_label, textAreaW);
   lv_label_set_long_mode(res_empty_label, LV_LABEL_LONG_WRAP);
   lv_obj_set_style_text_font(res_empty_label, valueFont, 0);
   lv_obj_set_style_text_color(res_empty_label, lv_color_hex(textColor), 0);
@@ -538,19 +583,7 @@ void create_simple_ui() {
   lv_obj_align(res_empty_label, LV_ALIGN_CENTER, 0, -20);
   lv_obj_add_flag(res_empty_label, LV_OBJ_FLAG_HIDDEN);
 
-  btn_reservation_back = lv_btn_create(reservation_container);
-  lv_obj_set_size(btn_reservation_back, arrowSize, arrowSize);
-  lv_obj_align(btn_reservation_back, LV_ALIGN_BOTTOM_LEFT, arrowMargin, -arrowMargin);
-  lv_obj_set_style_radius(btn_reservation_back, arrowSize / 2, 0);
-  lv_obj_set_style_bg_color(btn_reservation_back, lv_color_hex(0x2196F3), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(btn_reservation_back, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_t *lbl_rb = lv_label_create(btn_reservation_back);
-  lv_label_set_text(lbl_rb, LV_SYMBOL_RIGHT);
-  lv_obj_set_style_text_color(lbl_rb, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_center(lbl_rb);
-  lv_obj_add_event_cb(btn_reservation_back, [](lv_event_t *e) { show_status_screen(); }, LV_EVENT_CLICKED, NULL);
-
-  // Details screen (problem description + back arrow) – hidden by default
+  // Details screen (problem description; same ring + title style as status)
   details_container = lv_obj_create(screen);
   lv_obj_set_size(details_container, DISPLAY_WIDTH, DISPLAY_HEIGHT);
   lv_obj_set_pos(details_container, 0, 0);
@@ -560,32 +593,54 @@ void create_simple_ui() {
   lv_obj_set_scrollbar_mode(details_container, LV_SCROLLBAR_MODE_OFF);
   lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
 
-  lv_obj_t *details_title = lv_label_create(details_container);
-  lv_label_set_text(details_title, "Problem description");
-  lv_obj_set_style_text_font(details_title, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(details_title, lv_color_hex(textColor), 0);
-  lv_obj_set_pos(details_title, 12, 8);
+  details_outer_ring = lv_obj_create(details_container);
+  lv_obj_set_size(details_outer_ring, outerW, outerH);
+  lv_obj_set_pos(details_outer_ring, screenMargin, screenMargin);
+  lv_obj_set_style_bg_opa(details_outer_ring, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(details_outer_ring, outerRingWidth, 0);
+  lv_obj_set_style_border_color(details_outer_ring, lv_color_hex(backgroundColor), 0);
+  lv_obj_set_style_radius(details_outer_ring, 0, 0);
+  lv_obj_set_style_pad_all(details_outer_ring, 0, 0);
+  lv_obj_set_style_outline_width(details_outer_ring, 0, 0);
+  lv_obj_set_scrollbar_mode(details_outer_ring, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(details_outer_ring, LV_OBJ_FLAG_SCROLLABLE);
 
-  lv_obj_t *problem_scroll = lv_obj_create(details_container);
-  lv_obj_set_size(problem_scroll, DISPLAY_WIDTH - 24, DISPLAY_HEIGHT - arrowSize - arrowMargin - 40);
-  lv_obj_set_pos(problem_scroll, 12, 36);
+  details_status_indicator = lv_obj_create(details_outer_ring);
+  lv_obj_set_size(details_status_indicator, innerW, innerH);
+  lv_obj_set_pos(details_status_indicator, 0, 0);
+  lv_obj_set_style_bg_color(details_status_indicator, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_border_width(details_status_indicator, innerRingWidth, 0);
+  lv_obj_set_style_border_color(details_status_indicator, lv_color_hex(0x00FF00), 0);
+  lv_obj_set_style_radius(details_status_indicator, 0, 0);
+  lv_obj_set_style_pad_all(details_status_indicator, contentPad, 0);
+  lv_obj_set_style_outline_width(details_status_indicator, 0, 0);
+  lv_obj_set_scrollbar_mode(details_status_indicator, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(details_status_indicator, LV_OBJ_FLAG_SCROLLABLE);
+
+  details_title_label = lv_label_create(details_status_indicator);
+  lv_label_set_text(details_title_label, detailsScreenTitleText().c_str());
+  lv_obj_set_style_text_font(details_title_label, titleFont, 0);
+  lv_obj_set_style_text_color(details_title_label, lv_color_hex(textColor), 0);
+  lv_obj_set_width(details_title_label, textAreaW);
+  lv_label_set_long_mode(details_title_label, LV_LABEL_LONG_WRAP);
+  lv_obj_align(details_title_label, LV_ALIGN_TOP_LEFT, 0, 0);
+
+  const int detailsScrollTop = 65;
+  int detailsScrollH = innerH - 2 * contentPad - detailsScrollTop - 8;
+  if (detailsScrollH < 60)
+    detailsScrollH = 60;
+
+  lv_obj_t *problem_scroll = lv_obj_create(details_status_indicator);
+  lv_obj_set_size(problem_scroll, textAreaW, detailsScrollH);
+  lv_obj_align(problem_scroll, LV_ALIGN_TOP_LEFT, 0, detailsScrollTop);
   lv_obj_set_style_border_width(problem_scroll, 0, 0);
   lv_obj_set_scrollbar_mode(problem_scroll, LV_SCROLLBAR_MODE_AUTO);
   problem_description_label = lv_label_create(problem_scroll);
-  lv_obj_set_width(problem_description_label, DISPLAY_WIDTH - 48);
+  lv_obj_set_width(problem_description_label, textAreaW - 8);
   lv_label_set_text(problem_description_label, "No problem description.");
   lv_obj_set_style_text_font(problem_description_label, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(problem_description_label, lv_color_hex(textColor), 0);
   lv_label_set_long_mode(problem_description_label, LV_LABEL_LONG_WRAP);
-
-  btn_back = lv_btn_create(details_container);
-  lv_obj_set_size(btn_back, arrowSize, arrowSize);
-  lv_obj_align(btn_back, LV_ALIGN_BOTTOM_LEFT, arrowMargin, -arrowMargin);
-  lv_obj_set_style_radius(btn_back, arrowSize / 2, 0);
-  lv_obj_t *lbl_back = lv_label_create(btn_back);
-  lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
-  lv_obj_center(lbl_back);
-  lv_obj_add_event_cb(btn_back, [](lv_event_t *e) { show_status_screen(); }, LV_EVENT_CLICKED, NULL);
 
   refreshReservationWidgets();
   applyMainScreenState();
@@ -595,46 +650,29 @@ void create_simple_ui() {
 void show_status_screen() {
   if (reservation_container) lv_obj_add_flag(reservation_container, LV_OBJ_FLAG_HIDDEN);
   if (details_container) lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
-  if (btn_forward) {
-    if (has_task)
-      lv_obj_clear_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
-    else
-      lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
-  }
-  if (btn_main_to_reservation)
-    lv_obj_clear_flag(btn_main_to_reservation, LV_OBJ_FLAG_HIDDEN);
   if (normal_container) lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
   applyMainScreenState();  // Style normal screen (red+white when non-operational, else white+black)
-  details_screen_visible = false;
-  reservation_screen_visible = false;
+  current_screen = SCREEN_STATUS;
+  if (btn_nav_back) lv_obj_move_foreground(btn_nav_back);
+  if (btn_nav_forward) lv_obj_move_foreground(btn_nav_forward);
 }
 
 void show_details_screen() {
   if (normal_container) lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
-  if (btn_forward) lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
-  if (btn_main_to_reservation) lv_obj_add_flag(btn_main_to_reservation, LV_OBJ_FLAG_HIDDEN);
   if (reservation_container) lv_obj_add_flag(reservation_container, LV_OBJ_FLAG_HIDDEN);
   if (details_container) lv_obj_clear_flag(details_container, LV_OBJ_FLAG_HIDDEN);
-  details_screen_visible = true;
-  reservation_screen_visible = false;
-  details_screen_shown_at = millis();
+  secondary_screen_shown_at = millis();
+  current_screen = SCREEN_DETAILS;
+  if (btn_nav_back) lv_obj_move_foreground(btn_nav_back);
+  if (btn_nav_forward) lv_obj_move_foreground(btn_nav_forward);
 }
 
 void refreshReservationWidgets() {
-  if (res_title_label)
-    lv_label_set_text(res_title_label, toolDisplayName.c_str());
-  char emptyBuf[120];
-  snprintf(emptyBuf, sizeof(emptyBuf),
-           "No reservations for the next %d days",
-           lookahead_days_reserved);
-
   const bool booked = reservation_has_booking;
-  if (booked && res_empty_label)
+  // Match main enable/disable screen behavior: when we have no reservation,
+  // show the labeled rows with placeholder values instead of an empty-state blurb.
+  if (res_empty_label)
     lv_obj_add_flag(res_empty_label, LV_OBJ_FLAG_HIDDEN);
-  else if (res_empty_label) {
-    lv_label_set_text(res_empty_label, emptyBuf);
-    lv_obj_clear_flag(res_empty_label, LV_OBJ_FLAG_HIDDEN);
-  }
 
   if (booked) {
     if (res_next_row_lbl) lv_obj_clear_flag(res_next_row_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -645,45 +683,64 @@ void refreshReservationWidgets() {
                             : "--");
     if (res_time_row_lbl) lv_obj_clear_flag(res_time_row_lbl, LV_OBJ_FLAG_HIDDEN);
     if (res_time_row_val) {
-      String timeBlock = reservation_start_text;
-      if (reservation_end_text.length()) {
-        timeBlock += "\n";
-        timeBlock += reservation_end_text;
-      }
+      String timeBlock = "";
+      if (reservation_start_text.length() && reservation_end_text.length())
+        timeBlock = reservation_start_text + " - " + reservation_end_text;
+      else if (reservation_start_text.length())
+        timeBlock = reservation_start_text;
+      else if (reservation_end_text.length())
+        timeBlock = reservation_end_text;
       if (timeBlock.length() == 0)
         timeBlock = "--";
       lv_label_set_text(res_time_row_val, timeBlock.c_str());
       lv_obj_clear_flag(res_time_row_val, LV_OBJ_FLAG_HIDDEN);
     }
   } else {
-    if (res_next_row_lbl) lv_obj_add_flag(res_next_row_lbl, LV_OBJ_FLAG_HIDDEN);
-    if (res_next_row_val) lv_obj_add_flag(res_next_row_val, LV_OBJ_FLAG_HIDDEN);
-    if (res_time_row_lbl) lv_obj_add_flag(res_time_row_lbl, LV_OBJ_FLAG_HIDDEN);
-    if (res_time_row_val) lv_obj_add_flag(res_time_row_val, LV_OBJ_FLAG_HIDDEN);
+    if (res_next_row_lbl) lv_obj_clear_flag(res_next_row_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (res_next_row_val) {
+      lv_label_set_text(res_next_row_val, "--");
+      lv_obj_clear_flag(res_next_row_val, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (res_time_row_lbl) lv_obj_clear_flag(res_time_row_lbl, LV_OBJ_FLAG_HIDDEN);
+    if (res_time_row_val) {
+      lv_label_set_text(res_time_row_val, "--");
+      lv_obj_clear_flag(res_time_row_val, LV_OBJ_FLAG_HIDDEN);
+    }
   }
 }
 
 void show_reservation_screen() {
   if (normal_container) lv_obj_add_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
   if (details_container) lv_obj_add_flag(details_container, LV_OBJ_FLAG_HIDDEN);
-  if (btn_forward) lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
-  if (btn_main_to_reservation) lv_obj_add_flag(btn_main_to_reservation, LV_OBJ_FLAG_HIDDEN);
   if (reservation_container) {
     refreshReservationWidgets();
     lv_obj_clear_flag(reservation_container, LV_OBJ_FLAG_HIDDEN);
   }
-  reservation_screen_visible = true;
-  details_screen_visible = false;
+  secondary_screen_shown_at = millis();
+  current_screen = SCREEN_RESERVATION;
+  if (btn_nav_back) lv_obj_move_foreground(btn_nav_back);
+  if (btn_nav_forward) lv_obj_move_foreground(btn_nav_forward);
+}
+
+static void navigate_forward() {
+  switch (current_screen) {
+    case SCREEN_STATUS:       show_details_screen();      break;
+    case SCREEN_DETAILS:      show_reservation_screen();  break;
+    case SCREEN_RESERVATION:  show_status_screen();       break;
+  }
+}
+
+static void navigate_back() {
+  switch (current_screen) {
+    case SCREEN_STATUS:       show_reservation_screen();  break;
+    case SCREEN_DETAILS:      show_status_screen();       break;
+    case SCREEN_RESERVATION:  show_details_screen();      break;
+  }
 }
 
 void applyNextReservationMQTT(JsonDocument& doc) {
-  if (doc["tool_name"].is<const char*>()) {
+  if (doc["tool_name"].is<const char*>())
     toolDisplayName = toolNameForDisplay(doc["tool_name"].as<const char*>());
-    if (title_label)
-      lv_label_set_text(title_label, toolDisplayName.c_str());
-    if (res_title_label)
-      lv_label_set_text(res_title_label, toolDisplayName.c_str());
-  }
   if (doc["lookahead_days"].is<int>())
     lookahead_days_reserved = doc["lookahead_days"].as<int>();
   else if (doc["lookahead_days"].is<long>())
@@ -711,6 +768,7 @@ void applyNextReservationMQTT(JsonDocument& doc) {
   }
 
   refreshReservationWidgets();
+  applyMainScreenState();
 }
 
 // MQTT Setup
@@ -1001,13 +1059,8 @@ void processMQTTMessage(const char* topic, const char* payload) {
   // ---- Operational: independent message ----
   if (strcmp(topic, mqtt_topic_operational.c_str()) == 0) {
     tool_operational = doc["operational"] | true;
-    if (doc["tool_name"].is<const char*>()) {
+    if (doc["tool_name"].is<const char*>())
       toolDisplayName = toolNameForDisplay(doc["tool_name"].as<const char*>());
-      if (title_label)
-        lv_label_set_text(title_label, toolDisplayName.c_str());
-      if (res_title_label)
-        lv_label_set_text(res_title_label, toolDisplayName.c_str());
-    }
     applyMainScreenState();
     Serial.print(millis());
     Serial.print(" ms [state] operational topic -> tool_operational=");
@@ -1071,13 +1124,6 @@ void processMQTTMessage(const char* topic, const char* payload) {
         lv_label_set_text(problem_description_label, "No problem description.");
     }
 
-    if (btn_forward) {
-      if (has_task)
-        lv_obj_clear_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
-      else
-        lv_obj_add_flag(btn_forward, LV_OBJ_FLAG_HIDDEN);
-    }
-
     applyMainScreenState();
     Serial.print(millis());
     Serial.print(" ms [state] task event=");
@@ -1109,22 +1155,19 @@ void processMQTTMessage(const char* topic, const char* payload) {
       const char* userLabelFromPayload = doc["user_label"];
       if (user_label) lv_label_set_text(user_label, userLabelFromPayload);
     }
-    if (doc["tool_name"].is<const char*>()) {
-      const char* toolNameFromPayload = doc["tool_name"];
-      String newDisplayName = toolNameForDisplay(toolNameFromPayload);
-      if (newDisplayName != toolDisplayName && title_label) {
-        toolDisplayName = newDisplayName;
-        lv_label_set_text(title_label, toolDisplayName.c_str());
-        if (res_title_label)
-          lv_label_set_text(res_title_label, toolDisplayName.c_str());
-      }
-    }
     if (doc["event_type"].is<const char*>()) {
       const char* eventType = doc["event_type"];
       last_status_enabled = (strcmp(eventType, "enabled") == 0);
       updateStatusIndicator(last_status_enabled);
       if (user_label) {
         lv_label_set_text(user_label, last_status_enabled ? "Current User" : "Last User");
+      }
+    }
+    if (doc["tool_name"].is<const char*>()) {
+      String newDisplayName = toolNameForDisplay(doc["tool_name"].as<const char*>());
+      if (newDisplayName != toolDisplayName) {
+        toolDisplayName = newDisplayName;
+        applyMainScreenState();
       }
     }
     return;
@@ -1187,6 +1230,23 @@ void applyMainScreenState() {
     lv_obj_set_style_border_color(outer_ring, lv_color_hex(red), 0);
     lv_obj_set_style_border_color(status_indicator, lv_color_hex(red), 0);
 
+    if (reservation_container) {
+      lv_obj_set_style_bg_color(reservation_container, lv_color_hex(red), 0);
+      if (res_outer_ring) lv_obj_set_style_border_color(res_outer_ring, lv_color_hex(red), 0);
+      if (res_status_indicator) {
+        lv_obj_set_style_bg_color(res_status_indicator, lv_color_hex(red), 0);
+        lv_obj_set_style_border_color(res_status_indicator, lv_color_hex(red), 0);
+      }
+    }
+    if (details_container) {
+      lv_obj_set_style_bg_color(details_container, lv_color_hex(red), 0);
+      if (details_outer_ring) lv_obj_set_style_border_color(details_outer_ring, lv_color_hex(red), 0);
+      if (details_status_indicator) {
+        lv_obj_set_style_bg_color(details_status_indicator, lv_color_hex(red), 0);
+        lv_obj_set_style_border_color(details_status_indicator, lv_color_hex(red), 0);
+      }
+    }
+
     if (title_label) {
       lv_label_set_text(title_label, (toolDisplayName + " shut down").c_str());
       lv_obj_set_style_text_color(title_label, lv_color_hex(white), 0);
@@ -1197,6 +1257,15 @@ void applyMainScreenState() {
     if (time_value) lv_obj_set_style_text_color(time_value, lv_color_hex(white), 0);
     if (status_label) lv_obj_set_style_text_color(status_label, lv_color_hex(white), 0);
 
+    if (res_title_label) lv_obj_set_style_text_color(res_title_label, lv_color_hex(white), 0);
+    if (res_next_row_lbl) lv_obj_set_style_text_color(res_next_row_lbl, lv_color_hex(white), 0);
+    if (res_next_row_val) lv_obj_set_style_text_color(res_next_row_val, lv_color_hex(white), 0);
+    if (res_time_row_lbl) lv_obj_set_style_text_color(res_time_row_lbl, lv_color_hex(white), 0);
+    if (res_time_row_val) lv_obj_set_style_text_color(res_time_row_val, lv_color_hex(white), 0);
+    if (res_empty_label) lv_obj_set_style_text_color(res_empty_label, lv_color_hex(white), 0);
+    if (details_title_label) lv_obj_set_style_text_color(details_title_label, lv_color_hex(white), 0);
+    if (problem_description_label) lv_obj_set_style_text_color(problem_description_label, lv_color_hex(white), 0);
+
     if (task_summary_label) {
       lv_label_set_text(task_summary_label, task_summary.c_str());
       lv_obj_set_style_text_color(task_summary_label, lv_color_hex(white), 0);
@@ -1206,6 +1275,15 @@ void applyMainScreenState() {
     lv_obj_clear_flag(normal_container, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_bg_color(normal_container, lv_color_hex(white), 0);
     lv_obj_set_style_bg_color(status_indicator, lv_color_hex(white), 0);
+    if (reservation_container)
+      lv_obj_set_style_bg_color(reservation_container, lv_color_hex(white), 0);
+    if (res_status_indicator)
+      lv_obj_set_style_bg_color(res_status_indicator, lv_color_hex(white), 0);
+    if (details_container)
+      lv_obj_set_style_bg_color(details_container, lv_color_hex(white), 0);
+    if (details_status_indicator)
+      lv_obj_set_style_bg_color(details_status_indicator, lv_color_hex(white), 0);
+
     updateOuterRing(has_task);
     updateStatusIndicator(last_status_enabled);
 
@@ -1219,31 +1297,47 @@ void applyMainScreenState() {
     if (time_value) lv_obj_set_style_text_color(time_value, lv_color_hex(black), 0);
     if (status_label) lv_obj_set_style_text_color(status_label, lv_color_hex(black), 0);
 
+    if (res_title_label) lv_obj_set_style_text_color(res_title_label, lv_color_hex(black), 0);
+    if (res_next_row_lbl) lv_obj_set_style_text_color(res_next_row_lbl, lv_color_hex(black), 0);
+    if (res_next_row_val) lv_obj_set_style_text_color(res_next_row_val, lv_color_hex(black), 0);
+    if (res_time_row_lbl) lv_obj_set_style_text_color(res_time_row_lbl, lv_color_hex(black), 0);
+    if (res_time_row_val) lv_obj_set_style_text_color(res_time_row_val, lv_color_hex(black), 0);
+    if (res_empty_label) lv_obj_set_style_text_color(res_empty_label, lv_color_hex(black), 0);
+    if (details_title_label) lv_obj_set_style_text_color(details_title_label, lv_color_hex(black), 0);
+    if (problem_description_label) lv_obj_set_style_text_color(problem_description_label, lv_color_hex(black), 0);
+
     if (task_summary_label)
       lv_obj_add_flag(task_summary_label, LV_OBJ_FLAG_HIDDEN);
   }
+  applySecondaryScreenTitles();
 }
 
 // Outer ring: yellow when task, background color when no task (border width always same so layout never shifts)
 void updateOuterRing(bool hasTask) {
-  if (!outer_ring) return;
-  if (hasTask) {
-    lv_obj_set_style_border_color(outer_ring, lv_color_hex(0xFFFF00), 0);
+  lv_color_t c = hasTask ? lv_color_hex(0xFFFF00) : lv_color_hex(0xFFFFFF);
+  if (outer_ring)
+    lv_obj_set_style_border_color(outer_ring, c, 0);
+  if (res_outer_ring)
+    lv_obj_set_style_border_color(res_outer_ring, c, 0);
+  if (details_outer_ring)
+    lv_obj_set_style_border_color(details_outer_ring, c, 0);
+  if (hasTask)
     Serial.println("Outer ring: YELLOW (task)");
-  } else {
-    lv_obj_set_style_border_color(outer_ring, lv_color_hex(0xFFFFFF), 0);  // Match normal_container background
+  else
     Serial.println("Outer ring: none (no task)");
-  }
 }
 
 // Inner ring: green = enabled, red = disabled
 void updateStatusIndicator(bool isEnabled) {
-  if (!status_indicator) return;
-  if (isEnabled) {
-    lv_obj_set_style_border_color(status_indicator, lv_color_hex(0x00FF00), 0);
+  lv_color_t c = isEnabled ? lv_color_hex(0x00FF00) : lv_color_hex(0xFF0000);
+  if (status_indicator)
+    lv_obj_set_style_border_color(status_indicator, c, 0);
+  if (res_status_indicator)
+    lv_obj_set_style_border_color(res_status_indicator, c, 0);
+  if (details_status_indicator)
+    lv_obj_set_style_border_color(details_status_indicator, c, 0);
+  if (isEnabled)
     Serial.println("Inner ring: GREEN (enabled)");
-  } else {
-    lv_obj_set_style_border_color(status_indicator, lv_color_hex(0xFF0000), 0);
+  else
     Serial.println("Inner ring: RED (disabled)");
-  }
 }
