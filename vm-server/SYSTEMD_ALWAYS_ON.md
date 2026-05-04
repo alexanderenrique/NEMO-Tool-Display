@@ -95,6 +95,9 @@ sudo systemctl start nemo-vm-server.service
 
 sudo systemctl enable nemo-api-sync.service
 sudo systemctl start nemo-api-sync.service
+
+sudo systemctl restart nemo-api-sync.service
+sudo systemctl start nemo-api-sync.service
 ```
 
 Check status:

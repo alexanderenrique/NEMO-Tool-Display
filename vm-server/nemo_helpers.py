@@ -10,7 +10,7 @@ import json
 import logging
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -190,15 +190,49 @@ def parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _parse_iso_reservation(value: Optional[str]) -> Optional[Tuple[datetime, bool]]:
+    """Parse API datetime. Returns (dt, has_explicit_timezone).
+
+    If the string has no ``Z``/offset, *dt* is **naive** and is treated as lab **wall
+    clock** (do not add ``TIMEZONE_OFFSET_HOURS`` for display). If it has a timezone,
+    *dt* is aware; convert to UTC and apply the offset for display like before.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    s = value.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            return (dt, False)
+        return (dt, True)
+    except (ValueError, TypeError):
+        return None
+
+
+def _naive_wall_to_utc_instant(naive: datetime, tz_offset_hours: int) -> datetime:
+    """Convert naive wall time (in the lab's configured zone) to a UTC instant.
+
+    Display uses ``utc + timedelta(hours=tz_offset_hours)`` for aware values; the inverse
+    for naive wall *W* is ``W`` as UTC placeholder minus offset (see formatters).
+    """
+    return naive.replace(tzinfo=timezone.utc) - timedelta(hours=tz_offset_hours)
+
+
 def format_display_like_vm_main(iso_field: Optional[str], tz_offset_hours: int) -> str:
-    """Match vm-server/main.py timestamp formatting (+TIMEZONE_OFFSET_HOURS after fromisoformat)."""
+    """Format reservation/tool timestamps for the display.
+
+    Timezone-aware ISO strings are converted to UTC then shifted by *tz_offset_hours*
+    (same as vm-server ``main.py``). Naive strings are printed as-is (wall clock).
+    """
     if not iso_field or not isinstance(iso_field, str):
         return ""
     try:
-        dt = parse_iso_dt(iso_field)
-        if not dt:
+        parsed = _parse_iso_reservation(iso_field)
+        if not parsed:
             return "Invalid Time"
-        dt = dt + timedelta(hours=tz_offset_hours)
+        dt, explicit_tz = parsed
+        if explicit_tz:
+            dt = dt.astimezone(timezone.utc) + timedelta(hours=tz_offset_hours)
         return dt.strftime("%b %d, %I:%M %p")
     except Exception:
         return "Invalid Time"
@@ -222,8 +256,8 @@ def format_reservation_time_range(
     """Return a compact single-line reservation time range for the display.
 
     Examples:
-      - Apr 30 1:00–2:30pm   (single am/pm when same half-day)
-      - Apr 30 11:30am–1:00pm
+      - Apr 30 1:00-2:30pm   (single am/pm when same half-day)
+      - Apr 30 11:30am-1:00pm
       - Apr 30 1:00pm        (no end provided)
 
     Note: date is always derived from the (localized) start time.
@@ -231,10 +265,12 @@ def format_reservation_time_range(
     if not start_iso or not isinstance(start_iso, str):
         return ""
 
-    sdt = parse_iso_dt(start_iso)
-    if not sdt:
+    sp = _parse_iso_reservation(start_iso)
+    if not sp:
         return ""
-    sdt = sdt + timedelta(hours=tz_offset_hours)
+    sdt, s_exp = sp
+    if s_exp:
+        sdt = sdt.astimezone(timezone.utc) + timedelta(hours=tz_offset_hours)
 
     # Date from start only (ignore overnight edge cases).
     date_part = f"{sdt.strftime('%b')} {sdt.day}"
@@ -243,17 +279,20 @@ def format_reservation_time_range(
     if not end_iso:
         return f"{date_part} {_format_12h_hhmm(sdt)}{_format_ampm(sdt)}"
 
-    edt = parse_iso_dt(end_iso)
-    if not edt:
+    ep = _parse_iso_reservation(end_iso)
+    if not ep:
         return f"{date_part} {_format_12h_hhmm(sdt)}{_format_ampm(sdt)}"
-    edt = edt + timedelta(hours=tz_offset_hours)
+    edt, e_exp = ep
+    if e_exp:
+        edt = edt.astimezone(timezone.utc) + timedelta(hours=tz_offset_hours)
 
     st = _format_12h_hhmm(sdt)
     et = _format_12h_hhmm(edt)
     sa = _format_ampm(sdt)
     ea = _format_ampm(edt)
 
-    dash = "–"  # en-dash
+    # ASCII hyphen: embedded fonts often omit U+2013 (en dash).
+    dash = "-"
     if sa == ea:
         return f"{date_part} {st}{dash}{et}{ea}"
     return f"{date_part} {st}{sa}{dash}{et}{ea}"
@@ -288,10 +327,15 @@ def pick_next_reservation_for_tool(
                 continue
         except (ValueError, TypeError):
             continue
-        su = parse_iso_dt(r.get("start") if isinstance(r.get("start"), str) else None)
-        if su is None:
+        start_s = r.get("start") if isinstance(r.get("start"), str) else None
+        sp = _parse_iso_reservation(start_s)
+        if sp is None:
             continue
-        su_u = su.astimezone(timezone.utc)
+        su, su_explicit = sp
+        if su_explicit:
+            su_u = su.astimezone(timezone.utc)
+        else:
+            su_u = _naive_wall_to_utc_instant(su, tz_offset_hours)
         if su_u < now_utc:
             continue
         if su_u >= lookahead_cutoff:
