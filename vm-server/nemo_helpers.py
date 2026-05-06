@@ -243,9 +243,10 @@ def _format_12h_hhmm(dt: datetime) -> str:
     return dt.strftime("%I:%M").lstrip("0")
 
 
-def _format_ampm(dt: datetime) -> str:
-    """Return lowercase am/pm."""
-    return dt.strftime("%p").lower()
+def _format_ampm_periods(dt: datetime) -> str:
+    """Return ``a.m.`` / ``p.m.`` from wall-clock hour."""
+    hour = dt.hour % 24
+    return "a.m." if hour < 12 else "p.m."
 
 
 def format_reservation_time_range(
@@ -256,9 +257,9 @@ def format_reservation_time_range(
     """Return a compact single-line reservation time range for the display.
 
     Examples:
-      - Apr 30 1:00-2:30pm   (single am/pm when same half-day)
-      - Apr 30 11:30am-1:00pm
-      - Apr 30 1:00pm        (no end provided)
+      - May 5, 2:15-2:45 p.m.      (comma after date; ASCII hyphen; one meridiem when same half-day)
+      - Apr 30, 11:30 a.m.-1:00 p.m.
+      - Apr 30, 1:00 p.m.          (no end provided)
 
     Note: date is always derived from the (localized) start time.
     """
@@ -273,29 +274,29 @@ def format_reservation_time_range(
         sdt = sdt.astimezone(timezone.utc) + timedelta(hours=tz_offset_hours)
 
     # Date from start only (ignore overnight edge cases).
-    date_part = f"{sdt.strftime('%b')} {sdt.day}"
+    date_part = f"{sdt.strftime('%b')} {sdt.day},"
 
     end_iso = end_iso if isinstance(end_iso, str) and end_iso else None
     if not end_iso:
-        return f"{date_part} {_format_12h_hhmm(sdt)}{_format_ampm(sdt)}"
+        return f"{date_part} {_format_12h_hhmm(sdt)} {_format_ampm_periods(sdt)}"
 
     ep = _parse_iso_reservation(end_iso)
     if not ep:
-        return f"{date_part} {_format_12h_hhmm(sdt)}{_format_ampm(sdt)}"
+        return f"{date_part} {_format_12h_hhmm(sdt)} {_format_ampm_periods(sdt)}"
     edt, e_exp = ep
     if e_exp:
         edt = edt.astimezone(timezone.utc) + timedelta(hours=tz_offset_hours)
 
     st = _format_12h_hhmm(sdt)
     et = _format_12h_hhmm(edt)
-    sa = _format_ampm(sdt)
-    ea = _format_ampm(edt)
+    sa = _format_ampm_periods(sdt)
+    ea = _format_ampm_periods(edt)
 
     # ASCII hyphen: embedded fonts often omit U+2013 (en dash).
     dash = "-"
     if sa == ea:
-        return f"{date_part} {st}{dash}{et}{ea}"
-    return f"{date_part} {st}{sa}{dash}{et}{ea}"
+        return f"{date_part} {st}{dash}{et} {sa}"
+    return f"{date_part} {st} {sa}{dash}{et} {ea}"
 
 
 def pick_next_reservation_for_tool(
